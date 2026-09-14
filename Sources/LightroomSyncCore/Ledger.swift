@@ -1,0 +1,106 @@
+import Foundation
+
+/// One photo that has been imported into Photos.
+public struct LedgerEntry: Codable, Equatable {
+    public var assetID: String
+    public var shareID: String
+    public var albumID: String
+    public var fileName: String?
+    public var originalSHA256: String?
+    public var photosLocalIdentifier: String?
+    public var syncedAt: Date
+    public var captureDate: Date?
+    public var pixelWidth: Int?
+    public var pixelHeight: Int?
+    /// True when Lightroom served a smaller rendition than the edited photo's size.
+    public var downgraded: Bool
+
+    public init(assetID: String, shareID: String, albumID: String, fileName: String?, originalSHA256: String?,
+                photosLocalIdentifier: String?, syncedAt: Date, captureDate: Date?, pixelWidth: Int?,
+                pixelHeight: Int?, downgraded: Bool) {
+        self.assetID = assetID
+        self.shareID = shareID
+        self.albumID = albumID
+        self.fileName = fileName
+        self.originalSHA256 = originalSHA256
+        self.photosLocalIdentifier = photosLocalIdentifier
+        self.syncedAt = syncedAt
+        self.captureDate = captureDate
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.downgraded = downgraded
+    }
+}
+
+public struct LedgerState: Codable, Equatable {
+    /// Synced photos keyed by Lightroom asset ID.
+    public var entries: [String: LedgerEntry]
+    /// When each not-yet-synced photo was first observed in the album, keyed by asset ID.
+    public var firstSeen: [String: Date]
+
+    public init(entries: [String: LedgerEntry] = [:], firstSeen: [String: Date] = [:]) {
+        self.entries = entries
+        self.firstSeen = firstSeen
+    }
+}
+
+/// Persistent record of what has already been synced. A photo listed here is never synced again.
+public final class Ledger {
+    public let fileURL: URL
+    public private(set) var state: LedgerState
+
+    public init(fileURL: URL) throws {
+        self.fileURL = fileURL
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let data = try Data(contentsOf: fileURL)
+            state = try Self.decoder.decode(LedgerState.self, from: data)
+        } else {
+            state = LedgerState()
+        }
+    }
+
+    public var syncedCount: Int { state.entries.count }
+
+    public func contains(assetID: String) -> Bool {
+        state.entries[assetID] != nil
+    }
+
+    public func entry(withOriginalSHA256 sha256: String) -> LedgerEntry? {
+        state.entries.values.first { $0.originalSHA256 == sha256 }
+    }
+
+    /// Records the first time a photo was observed. Returns the stored date (existing or new).
+    @discardableResult
+    public func noteSeen(assetID: String, at date: Date) throws -> Date {
+        if let existing = state.firstSeen[assetID] { return existing }
+        state.firstSeen[assetID] = date
+        try save()
+        return date
+    }
+
+    public func record(_ entry: LedgerEntry) throws {
+        state.entries[entry.assetID] = entry
+        state.firstSeen[entry.assetID] = nil
+        try save()
+    }
+
+    public func save() throws {
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try Self.encoder.encode(state)
+        try data.write(to: fileURL, options: .atomic)
+    }
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
+    }()
+
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+}

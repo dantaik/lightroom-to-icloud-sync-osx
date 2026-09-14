@@ -1,0 +1,214 @@
+{
+ "base": "https://photos.adobe.io/v2/spaces/680b19438c8c46ccbac6b0ec71cc9c96/",
+ "album": {
+  "id": "63e4b83141a34bd58e2865d07b3c089c",
+  "links": {
+   "self": {
+    "href": "albums/63e4b83141a34bd58e2865d07b3c089c"
+   }
+  }
+ },
+ "resources": [
+  {
+   "id": "1cc09656b4414241bea8aeaf86b41b86",
+   "type": "album_asset",
+   "created": "0000-00-00T00:00:00",
+   "updated": "0000-00-00T00:00:00",
+   "revision_ids": [
+    "67309969d65148168fb74e124501a6f8"
+   ],
+   "links": {
+    "self": {
+     "href": "albums/63e4b83141a34bd58e2865d07b3c089c/assets/5dbd9a08573944d29afba1eb55658adc"
+    }
+   },
+   "asset": {
+    "id": "5dbd9a08573944d29afba1eb55658adc",
+    "type": "asset",
+    "subtype": "image",
+    "created": "2024-09-18T21:07:32.679957Z",
+    "updated": "2026-09-14T15:04:53.218065Z",
+    "links": {
+     "self": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc"
+     },
+     "/rels/rendition_type/2048": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/8bb23965c2194a168fe1f0589b0fd72c/renditions/a7adebccd2d76288665e3f013260e289"
+     },
+     "/rels/rendition_type/1280": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/8bb23965c2194a168fe1f0589b0fd72c/renditions/fecbde3e5ca6182418d5c3dc34e19b0c"
+     },
+     "/rels/rendition_type/640": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/8bb23965c2194a168fe1f0589b0fd72c/renditions/e6c05a59ef51ec8cca9d18590a5dd183"
+     },
+     "/rels/rendition_type/thumbnail2x": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/8bb23965c2194a168fe1f0589b0fd72c/renditions/cad818983fee5082e3957461b8199529"
+     },
+     "/rels/rendition_type/fullsize": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/1537cfa1376445802e00b612cb2f59d5/renditions/b1a416c194b642c583d49938f7f8faf4"
+     },
+     "/rels/rendition_generate/fullsize": {
+      "href": "assets/5dbd9a08573944d29afba1eb55658adc/revisions/1537cfa1376445802e00b612cb2f59d5/renditions/{rendition_id}?rendition_type=fullsize",
+      "templated": true
+     }
+    },
+    "payload": {
+     "develop": {
+      "croppedWidth": 3052,
+      "croppedHeight": 4069,
+      "device": "18302 MacStudio PIC {dbe4ea94d21e5d62d1a07146845285c597a6f4f0372a3d323fc76f39b65ce006}",
+      "userOrientation": 1,
+      "crsHDREditMode": false,
+      "fromDefaults": true,
+      "processingModel": "lightroom",
+      "xmpCameraRaw": {
+       "sha256": "b07d1f40b5df8e93ad0a1ce195d62ac5f71906881342d43b1eb3a9c733b49f8a"
+      }
+     },
+     "userUpdated": "2024-09-18T21:07:30.325Z",
+     "captureDate": "2024-09-18T15:55:12",
+     "xmp": {
+      "tiff": {
+       "Orientation": "top left"
+      }
+     },
+     "importSource": {
+      "originalHeight": 4069,
+      "importTimestamp": "2024-09-18T21:07:30Z",
+      "contentType": "image/jpeg",
+      "fileName": "Pitrat_Megan.jpg",
+      "fileSize": 7832470,
+      "originalWidth": 3052,
+      "sha256": "28d2e36df2f826880c11ae44a8a708e7fdde9be1ede2257e9613959ca4f8f80a",
+      "originalDigest": "01EE65ED7814DEA2442B79204A5C87EA",
+      "importedBy": "14eaec741122bc12532df716ca6e5666"
+     },
+     "userCreated": "2024-09-18T21:07:30.325Z",
+     "aesthetics": {
+      "application": "ias",
+      "balancing": 0,
+      "content": 6,
+      "created": "2024-09-18T21:07:55Z",
+      "dof": 9,
+      "emphasis": 2,
+      "harmony": 17,
+      "lighting": -4,
+      "repetition": -1,
+      "rot": 1,
+      "score": 54,
+      "symmetry": -22,
+      "version": 1,
+      "vivid": 0
+     }
+    }
+   },
+   "payload": {
+    "userCreated": "2024-09-18T21:07:30.325Z",
+    "userUpdated": "2024-09-18T21:07:30.325Z"
+   }
+  },
+  {
+   "id": "3627da1d09c84b5f8688ab91aae00592",
+   "type": "album_asset",
+   "created": "0000-00-00T00:00:00",
+   "updated": "0000-00-00T00:00:00",
+   "revision_ids": [
+    "058966ea24044cfdbf2e03d6f17cc3f2"
+   ],
+   "links": {
+    "self": {
+     "href": "albums/63e4b83141a34bd58e2865d07b3c089c/assets/4145241d2394492caa127fadf9f932c6"
+    }
+   },
+   "asset": {
+    "id": "4145241d2394492caa127fadf9f932c6",
+    "type": "asset",
+    "subtype": "image",
+    "created": "2024-09-18T21:07:04.733760Z",
+    "updated": "2025-04-24T16:06:52.692880Z",
+    "links": {
+     "self": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6"
+     },
+     "/rels/rendition_type/2048": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/9eca5deb6cb1e7312d3046b5ab90ed2e/renditions/6aed21bf1c18a48c21cfa7b5dd6db213"
+     },
+     "/rels/rendition_type/1280": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/9eca5deb6cb1e7312d3046b5ab90ed2e/renditions/4c1099b448eba2be343f96bc5c5245fb"
+     },
+     "/rels/rendition_type/640": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/9eca5deb6cb1e7312d3046b5ab90ed2e/renditions/ab53c96246aef7e1b8f3b06081215050"
+     },
+     "/rels/rendition_type/thumbnail2x": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/9eca5deb6cb1e7312d3046b5ab90ed2e/renditions/63ad150067df808e262e52e2ac37d8d8"
+     },
+     "/rels/rendition_type/fullsize": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/b9fce9882562e7832594e05565301186/renditions/362fbe37cc1f43afb9d2bd150becd82e"
+     },
+     "/rels/rendition_generate/fullsize": {
+      "href": "assets/4145241d2394492caa127fadf9f932c6/revisions/b9fce9882562e7832594e05565301186/renditions/{rendition_id}?rendition_type=fullsize",
+      "templated": true
+     }
+    },
+    "payload": {
+     "develop": {
+      "croppedWidth": 3046,
+      "croppedHeight": 4061,
+      "device": "18302 MacStudio PIC {dbe4ea94d21e5d62d1a07146845285c597a6f4f0372a3d323fc76f39b65ce006}",
+      "userOrientation": 1,
+      "crsHDREditMode": false,
+      "fromDefaults": true,
+      "processingModel": "lightroom",
+      "xmpCameraRaw": {
+       "sha256": "b07d1f40b5df8e93ad0a1ce195d62ac5f71906881342d43b1eb3a9c733b49f8a"
+      }
+     },
+     "userUpdated": "2024-09-18T21:07:02.583Z",
+     "captureDate": "2024-09-18T16:02:20",
+     "xmp": {
+      "tiff": {
+       "Orientation": "top left"
+      }
+     },
+     "importSource": {
+      "originalHeight": 4061,
+      "importTimestamp": "2024-09-18T21:07:02Z",
+      "contentType": "image/jpeg",
+      "fileName": "Wilson_Lindsey.jpg",
+      "fileSize": 8134492,
+      "originalWidth": 3046,
+      "sha256": "34ba3b0694c0e79dc34030b7c6f1c0649f93f2f3a31372ef8380412397301565",
+      "originalDigest": "B1CC8D17DE3C58364380ED2C66286A5A",
+      "importedBy": "14eaec741122bc12532df716ca6e5666"
+     },
+     "userCreated": "2024-09-18T21:07:02.583Z",
+     "aesthetics": {
+      "application": "ias",
+      "balancing": 1,
+      "content": 14,
+      "created": "2024-09-18T21:07:50Z",
+      "dof": 14,
+      "emphasis": 2,
+      "harmony": 20,
+      "lighting": 1,
+      "repetition": 0,
+      "rot": 2,
+      "score": 59,
+      "symmetry": -11,
+      "version": 1,
+      "vivid": 0
+     }
+    }
+   },
+   "payload": {
+    "userCreated": "2024-09-18T21:07:02.584Z",
+    "userUpdated": "2024-09-18T21:07:02.584Z"
+   }
+  }
+ ],
+ "links": {
+  "next": {
+   "href": "albums/63e4b83141a34bd58e2865d07b3c089c/assets?limit=2&subtype=image%3Bvideo&filters%5Bflags%5D=%3Bpick%3Bunflagged&captured_after=2024-09-18T16%3A02%3A20&embed=asset"
+  }
+ }
+}

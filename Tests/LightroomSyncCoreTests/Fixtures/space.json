@@ -1,0 +1,37 @@
+{
+ "base": "https://photos.adobe.io/v2/",
+ "id": "680b19438c8c46ccbac6b0ec71cc9c96",
+ "type": "space",
+ "subtype": "shared",
+ "created": "2024-09-18T21:08:04.657905Z",
+ "updated": "2024-09-18T21:08:27.776319Z",
+ "country_blocked": false,
+ "revision_ids": [
+  "40a5638bcff357b33038468f544c697e",
+  "3ec630896b2a804663a9513396aec4f0",
+  "f60c962ba71346b1adf2f4f5308fd1c2",
+  "3db7e5416d3240918d9049aef38157a5"
+ ],
+ "links": {
+  "self": {
+   "href": "spaces/680b19438c8c46ccbac6b0ec71cc9c96"
+  },
+  "/rels/web_space": {
+   "href": "https://adobe.ly/3ZvyvUr"
+  },
+  "/rels/space_resources": {
+   "href": "spaces/680b19438c8c46ccbac6b0ec71cc9c96/resources"
+  }
+ },
+ "createdOnClient": "AdobeNimbus-7.5.20240801_2320_5b173a1-OSX",
+ "payload": {
+  "download": true,
+  "private": false,
+  "metadata": false,
+  "location": false,
+  "presentationFilters": true,
+  "allowInviteRequests": true,
+  "comments_disabled": true,
+  "favorites_disabled": true
+ }
+}
