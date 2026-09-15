@@ -12,7 +12,7 @@ struct LightroomSyncApp: App {
             MenuPanel()
                 .environmentObject(model)
         } label: {
-            Image(systemName: model.menuSymbol)
+            Image(nsImage: model.menuBarImage)
         }
         .menuBarExtraStyle(.window)
     }

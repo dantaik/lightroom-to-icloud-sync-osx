@@ -47,10 +47,6 @@ struct MenuPanel: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 11) {
-            statusIndicator
-                .frame(width: 16, height: 16)
-                .padding(.top, 2)
-
             VStack(alignment: .leading, spacing: 3) {
                 Text("Lightroom → iCloud Photos")
                     .font(.headline)
@@ -74,19 +70,16 @@ struct MenuPanel: View {
             }
 
             Spacer(minLength: 0)
-        }
-    }
 
-    @ViewBuilder
-    private var statusIndicator: some View {
-        if model.statusKind == .syncing {
-            ProgressView()
-                .controlSize(.small)
-        } else {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 9, height: 9)
-                .padding(.top, 4)
+            Button {
+                model.showAbout()
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("What this app does, what it cannot do, and where the source lives")
         }
     }
 
@@ -96,16 +89,6 @@ struct MenuPanel: View {
         case .failed: return .red
         case .unsaved: return .orange
         default: return .secondary
-        }
-    }
-
-    private var statusColor: Color {
-        switch model.statusKind {
-        case .ok: return .green
-        case .syncing: return .accentColor
-        case .unsaved: return .orange
-        case .failed: return .red
-        case .unconfigured: return .secondary
         }
     }
 
@@ -251,10 +234,6 @@ struct MenuPanel: View {
                 Label("Open log", systemImage: "doc.plaintext")
             }
             .help("Every check writes what it did to ~/Library/Logs/LightroomSync/sync.log")
-
-            Button("About") { model.showAbout() }
-                .buttonStyle(.link)
-                .help("What this app does, what it cannot do, and where the source lives")
 
             Spacer(minLength: 0)
 

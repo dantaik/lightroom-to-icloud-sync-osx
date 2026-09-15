@@ -87,7 +87,7 @@ python3 scripts/make-icon.py
 4. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
 5. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
 
-The **About** button in the app summarises the same behaviour and limits described below.
+The ⓘ button in the panel's top right corner summarises the same behaviour and limits described below, and links to this repository.
 
 ### Saved settings are the only settings
 
@@ -141,7 +141,7 @@ A photo without a capture date is not looked up at all, since the search would h
 | `~/Library/Logs/LightroomSync/sync.log` | What every check did, photo by photo. *Open log* opens it. |
 | macOS user defaults | The saved settings |
 
-The panel itself stays short: a status line for what the app is doing and what the last check did, the settings, and the actions. The detail goes to the log.
+The panel itself stays short: a status line for what the app is doing and what the last check did, the settings, and the actions. The detail goes to the log. While a check runs, the menu bar icon turns.
 
 ### Diagnostics
 

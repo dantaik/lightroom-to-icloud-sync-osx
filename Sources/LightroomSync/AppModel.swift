@@ -108,6 +108,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var lastReport: SyncReport?
     @Published private(set) var syncedCount = 0
     @Published private(set) var setupError: String?
+    /// Which frame of the menu bar spinner is showing.
+    @Published private(set) var spinnerFrame = 0
 
     let logFileURL: URL
 
@@ -119,6 +121,7 @@ final class AppModel: ObservableObject {
     private var engine: SyncEngine?
     private let aboutWindow = AboutWindow()
     private var loopTask: Task<Void, Never>?
+    private var spinnerTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
     private var lastAttemptAt: Date?
 
@@ -177,11 +180,13 @@ final class AppModel: ObservableObject {
         return "Check the album now and sync new photos without waiting for the delay."
     }
 
-    var menuSymbol: String {
-        switch phase {
-        case .idle: return "photo.on.rectangle.angled"
-        case .syncing: return "arrow.triangle.2.circlepath"
-        case .failed: return "exclamationmark.triangle"
+    /// The menu bar item's image. While a pass runs this is one frame of the turning sync symbol,
+    /// advanced by `spinnerTask`.
+    var menuBarImage: NSImage {
+        switch statusKind {
+        case .syncing: return MenuBarIcon.spinner(frame: spinnerFrame)
+        case .failed: return MenuBarIcon.symbol(MenuBarIcon.failedSymbol)
+        default: return MenuBarIcon.symbol(MenuBarIcon.idleSymbol)
         }
     }
 
@@ -367,10 +372,30 @@ final class AppModel: ObservableObject {
         await runSync(ignoreDelays: false)
     }
 
+    /// Turns the menu bar symbol while a pass runs. Twelve frames at 80 ms is one turn a second.
+    private func startSpinner() {
+        guard spinnerTask == nil else { return }
+        spinnerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled, let self else { return }
+                self.spinnerFrame = (self.spinnerFrame + 1) % MenuBarIcon.spinnerFrameCount
+            }
+        }
+    }
+
+    private func stopSpinner() {
+        spinnerTask?.cancel()
+        spinnerTask = nil
+        spinnerFrame = 0
+    }
+
     private func runSync(ignoreDelays: Bool) async {
         guard let engine, let settings = editor.saved, settings.isConfigured, !isSyncing else { return }
         lastAttemptAt = Date()
         phase = .syncing(completed: 0, total: 0)
+        startSpinner()
+        defer { stopSpinner() }
         do {
             let report = try await engine.run(settings.syncConfiguration(ignoreDelays: ignoreDelays))
             lastReport = report
