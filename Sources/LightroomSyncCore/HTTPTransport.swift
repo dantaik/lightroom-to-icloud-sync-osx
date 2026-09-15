@@ -184,9 +184,10 @@ public final class URLSessionTransport: HTTPTransport {
         // moved rather than read.
         try? FileManager.default.removeItem(at: fileURL)
         try FileManager.default.moveItem(at: temporaryURL, to: fileURL)
-        let byteCount = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? nil
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let byteCount = (attributes?[.size] as? NSNumber)?.intValue ?? 0
         return HTTPFileResponse(status: http.statusCode, headers: headers, fileURL: fileURL,
-                                byteCount: byteCount ?? 0, finalURL: http.url, resumed: resumed)
+                                byteCount: byteCount, finalURL: http.url, resumed: resumed)
         #endif
     }
 
