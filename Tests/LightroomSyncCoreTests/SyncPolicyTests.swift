@@ -35,6 +35,17 @@ final class SyncPolicyTests: XCTestCase {
         XCTAssertEqual(policy.decision(for: photo(added: old, edited: now.addingTimeInterval(-121)), firstSeen: old, now: now), .sync)
     }
 
+    func testTheFirstEditWaitFollowsShortIntervalsAndIsCappedForLongOnes() {
+        // At or under the cap the interval is the wait, which is what it has always been.
+        XCTAssertEqual(SyncPolicy.minimumAge(forCheckInterval: 5 * 60), 5 * 60)
+        XCTAssertEqual(SyncPolicy.minimumAge(forCheckInterval: 15 * 60), 15 * 60)
+        // Beyond it, checking less often no longer delays every photo by that much.
+        XCTAssertEqual(SyncPolicy.minimumAge(forCheckInterval: 4 * 3600), SyncPolicy.maximumFirstEditWait)
+        XCTAssertEqual(SyncPolicy.minimumAge(forCheckInterval: 30 * 86_400), SyncPolicy.maximumFirstEditWait)
+        // A nonsensical interval cannot turn into a negative wait.
+        XCTAssertEqual(SyncPolicy.minimumAge(forCheckInterval: -60), 0)
+    }
+
     func testIgnoreDelaysSyncsImmediately() {
         let now = Date()
         let policy = SyncPolicy(minimumAgeInAlbum: 3600, settleTime: 3600, ignoreDelays: true)

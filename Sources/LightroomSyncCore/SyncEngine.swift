@@ -40,6 +40,11 @@ public struct SyncReport: Equatable {
     public var metadataRestored = 0
     public var startedAt: Date
     public var finishedAt: Date
+    /// How long the pass took, on a monotonic clock. `finishedAt - startedAt` will not do:
+    /// `startedAt` is the timestamp the pass reasons against, which a caller may set to anything.
+    public var duration: Duration = .zero
+    /// Where that time went, so a slow pass says which step was slow.
+    public var timings = SyncTimings()
 
     public init(shareID: String, albumID: String, albumName: String, startedAt: Date) {
         self.shareID = shareID
@@ -109,6 +114,7 @@ public final class SyncEngine {
     }
 
     public func run(_ config: SyncConfiguration, now: Date = Date()) async throws -> SyncReport {
+        let pass = Stopwatch()
         let link: AlbumShareLink
         do {
             link = try AlbumShareLink.parse(config.shareLink)
@@ -123,19 +129,26 @@ public final class SyncEngine {
         guard share.downloadsAllowed else { throw LightroomError.downloadsDisabled }
 
         let photos = try await client.listPhotos(shareID: shareID, albumID: album.id).filter(\.isImage)
+        report.timings.listing = pass.elapsed
         report.photosInAlbum = photos.count
         let candidates = photos.filter { !ledger.contains(assetID: $0.assetID) }
         report.alreadySynced = photos.count - candidates.count
-        let policy = SyncPolicy(minimumAgeInAlbum: config.checkInterval, settleTime: settleTime, ignoreDelays: config.ignoreDelays)
+        let policy = SyncPolicy(minimumAgeInAlbum: SyncPolicy.minimumAge(forCheckInterval: config.checkInterval),
+                                settleTime: settleTime, ignoreDelays: config.ignoreDelays)
         let albumName = config.photosAlbumName.flatMap { $0.isEmpty ? nil : $0 }
-        log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced, at \(config.photoSize.shortDescription)")
+        log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced, at \(config.photoSize.shortDescription) (listed in \(Stopwatch.describe(report.timings.listing)))")
+
+        let refiling = Stopwatch()
         await refileIntoAlbum(albumName, photos: photos, report: &report)
+        report.timings.refiling = refiling.elapsed
         sink?.progress(completed: 0, total: candidates.count)
 
         for (index, photo) in candidates.enumerated() {
             defer { sink?.progress(completed: index + 1, total: candidates.count) }
             try Task.checkCancellation()
             let name = photo.fileName ?? photo.assetID
+            var timings = PhotoTimings()
+            defer { report.timings.add(timings) }
 
             if let sha = photo.originalSHA256, let existing = ledger.entry(withOriginalSHA256: sha) {
                 var duplicate = existing
@@ -143,44 +156,65 @@ public final class SyncEngine {
                 duplicate.shareID = shareID
                 duplicate.albumID = album.id
                 duplicate.syncedAt = now
+                let recording = Stopwatch()
                 try ledger.record(duplicate)
+                timings.ledger += recording.elapsed
                 report.duplicates += 1
                 log(.info, "Skipping \(name): the same original was already synced")
                 continue
             }
 
-            if let identifier = await findInPhotos(photo, albumName: albumName) {
-                try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
-                                              fileName: photo.expectedPhotosFileName ?? photo.fileName,
-                                              originalSHA256: photo.originalSHA256,
-                                              photosLocalIdentifier: identifier, photosAlbumName: albumName,
-                                              syncedAt: now, captureDate: photo.captureDate,
-                                              pixelWidth: nil, pixelHeight: nil, downgraded: false))
-                report.foundInPhotos += 1
-                log(.info, "\(name) is already in Photos; recorded it without downloading")
-                continue
-            }
-
+            // The waiting rules come before the Photos lookup below because they are free and it
+            // is not: it scans every asset in the library within a day of the capture date, and a
+            // photo that is not eligible yet would pay for that on every pass until it was.
+            let noting = Stopwatch()
             let firstSeen = try ledger.noteSeen(assetID: photo.assetID, at: now)
+            timings.ledger += noting.elapsed
             if case .wait(let reason) = policy.decision(for: photo, firstSeen: firstSeen, now: now) {
                 report.pending += 1
                 log(.info, "Waiting on \(name): \(reason)")
                 continue
             }
 
+            let searching = Stopwatch()
+            let lookup = await findInPhotos(photo, albumName: albumName)
+            if lookup.queried {
+                timings.lookup = searching.elapsed
+                timings.didLookup = true
+            }
+            if let identifier = lookup.identifier {
+                let recording = Stopwatch()
+                try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
+                                              fileName: photo.expectedPhotosFileName ?? photo.fileName,
+                                              originalSHA256: photo.originalSHA256,
+                                              photosLocalIdentifier: identifier, photosAlbumName: albumName,
+                                              syncedAt: now, captureDate: photo.captureDate,
+                                              pixelWidth: nil, pixelHeight: nil, downgraded: false))
+                timings.ledger += recording.elapsed
+                report.foundInPhotos += 1
+                log(.info, "\(name) is already in Photos; recorded it without downloading (lookup \(Stopwatch.describe(timings.lookup)))")
+                continue
+            }
+
             let downloaded: DownloadedPhoto
+            let fetching = Stopwatch()
             do {
                 downloaded = try await download(photo, shareID: shareID, size: config.photoSize, name: name)
+                timings.download = fetching.elapsed
+                timings.didDownload = true
             } catch LightroomError.downloadsDisabled {
                 throw LightroomError.downloadsDisabled
             } catch {
+                timings.download = fetching.elapsed
+                timings.didDownload = true
                 report.failed += 1
-                log(.error, "Download failed for \(name): \(error.localizedDescription)")
+                log(.error, "Download failed for \(name) after \(Stopwatch.describe(timings.download)): \(error.localizedDescription)")
                 continue
             }
 
             // What Lightroom served is measured against what the chosen size asks for, not against
             // the edited photo: a photo held back by the size setting is doing what it was told.
+            let sizing = Stopwatch()
             let servedSize = JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL)
             var downgraded = false
             if let servedSize,
@@ -194,8 +228,11 @@ public final class SyncEngine {
             let shrunk = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
             if shrunk != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
             let size = shrunk == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: shrunk) ?? servedSize)
+            timings.resize = sizing.elapsed
 
+            let describing = Stopwatch()
             let (fileURL, metadata) = describe(shrunk, from: photo, name: name, report: &report)
+            timings.metadata = describing.elapsed
             // Lightroom serves a JPEG named after the original, and a rendition carries no name at
             // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
             let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
@@ -207,9 +244,14 @@ public final class SyncEngine {
                                              isFavorite: metadata.isFavorite,
                                              albumName: albumName)
             let localIdentifier: String
+            let importing = Stopwatch()
             do {
                 localIdentifier = try await importer.importPhoto(request)
+                timings.importing = importing.elapsed
+                timings.didImport = true
             } catch {
+                timings.importing = importing.elapsed
+                timings.didImport = true
                 try? FileManager.default.removeItem(at: fileURL)
                 report.failed += 1
                 log(.error, "Import into Photos failed for \(name): \(error.localizedDescription)")
@@ -217,6 +259,7 @@ public final class SyncEngine {
             }
             try? FileManager.default.removeItem(at: fileURL)
 
+            let recording = Stopwatch()
             try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
                                           fileName: fileName,
                                           originalSHA256: photo.originalSHA256,
@@ -224,12 +267,20 @@ public final class SyncEngine {
                                           syncedAt: now, captureDate: request.captureDate,
                                           pixelWidth: size?.width, pixelHeight: size?.height,
                                           downgraded: downgraded))
+            timings.ledger += recording.elapsed
             report.synced += 1
             let dimensions = size.map { " (\($0.width)×\($0.height))" } ?? ""
-            log(.info, "Synced \(name)\(dimensions)")
+            let breakdown = timings.breakdown
+            log(.info, "Synced \(name)\(dimensions) in \(Stopwatch.describe(timings.total))"
+                + (breakdown.isEmpty ? "" : " — \(breakdown)"))
         }
 
         report.finishedAt = Date()
+        report.duration = pass.elapsed
+        log(.info, "Pass took \(Stopwatch.describe(report.duration)): \(report.timings.summary)")
+        // A pass that was slow says what it was slow because of, rather than leaving the numbers
+        // above to be ranked by hand.
+        if let diagnosis = report.timings.diagnosis { log(.info, diagnosis) }
         return report
     }
 
@@ -364,22 +415,29 @@ public final class SyncEngine {
         return "they were synced before the album was recorded"
     }
 
+    /// What the Photos lookup came back with, and whether the library was asked at all. The two
+    /// are separate so that a photo carrying too little to search on is not timed as a lookup.
+    struct PhotosLookup {
+        var identifier: String?
+        var queried: Bool
+    }
+
     /// Asks Photos whether this photo is already there, so a second Mac does not import it again.
     /// A lookup that fails is reported and treated as "not found": a duplicate is better than a
     /// photo that never syncs.
-    private func findInPhotos(_ photo: LightroomPhoto, albumName: String?) async -> String? {
+    private func findInPhotos(_ photo: LightroomPhoto, albumName: String?) async -> PhotosLookup {
         guard let fileName = photo.expectedPhotosFileName, let captureDate = photo.captureDate else {
-            return nil
+            return PhotosLookup(identifier: nil, queried: false)
         }
         let query = PhotoMatchQuery(fileName: fileName, captureDate: captureDate,
                                     dateTolerance: Self.captureDateTolerance,
                                     pixelWidth: photo.croppedWidth, pixelHeight: photo.croppedHeight,
                                     albumName: albumName)
         do {
-            return try await photoLibrary.findExistingAsset(matching: query)
+            return PhotosLookup(identifier: try await photoLibrary.findExistingAsset(matching: query), queried: true)
         } catch {
             log(.warning, "Could not check Photos for \(photo.fileName ?? photo.assetID): \(error.localizedDescription)")
-            return nil
+            return PhotosLookup(identifier: nil, queried: true)
         }
     }
 

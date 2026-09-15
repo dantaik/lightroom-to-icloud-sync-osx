@@ -121,11 +121,11 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 
 ## How syncing behaves
 
-- A photo becomes eligible once it has been in the shared album for at least the check interval. That gives you the interval to finish your first edits before the version is captured, so a longer interval is also a longer grace period.
+- A photo becomes eligible once it has been in the shared album for at least the check interval, up to a limit of 15 minutes. That leaves you time to finish your first edits before the version is captured, without a long interval also becoming a long delay: checking once a day means looking once a day, not holding every new photo back for a day.
 - A photo edited within the last two minutes waits for the next check, so an edit in progress is not captured half done.
 - Once synced, a photo is recorded in a local ledger and is **never synced again**, however often it is edited later. Removing it from the Lightroom album or from Photos does not resync it.
 - If the same original (same file hash) appears twice in the album, it is imported once.
-- Before downloading anything, the app asks Photos whether the photo is already there. See [Using two Macs](#using-two-macs).
+- Once a photo is eligible, and before downloading it, the app asks Photos whether it is already there. See [Using two Macs](#using-two-macs). The waiting rules are applied first, because that lookup searches the library around the photo's capture date and a photo that is not eligible yet would pay for one on every check until it was.
 - The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** checks immediately and ignores both delays.
 - Videos are listed but skipped. Only photos are synced.
@@ -202,6 +202,23 @@ A photo without a capture date is not looked up at all, since the search would h
 The panel itself stays short: a status line for what the app is doing and what the last check did, the settings, and the actions. The detail goes to the log. While a check runs, the menu bar icon turns.
 
 ### Diagnostics
+
+#### Why a check was slow
+
+Every check times itself, so a slow one says which step was slow rather than leaving it to be guessed at. Each photo carries its own breakdown, and the check ends with the totals and, when one step dominated, what that step is:
+
+```
+Album “Shared”: 4 photos, 4 not yet synced, at 6016 px (listed in 3 ms)
+Synced DSC_3921.NEF (6016×3996) in 1.11 s — lookup 700 ms, download 402 ms, resize 1 ms, ledger 2 ms
+Waiting on DSC_4000.NEF: added 0 min ago, eligible in 15 min
+Pass took 3.32 s: Photos lookups 2.10 s (×3), downloads 1.21 s (×3), ledger 5 ms, listing 3 ms, resizing 3 ms
+Most of that was Photos lookups (63%): every photo not yet in the ledger is searched for across the
+library by capture date, which costs more the larger the library is.
+```
+
+The steps are `listing` (reading the share and paging the album), `refiling`, `Photos lookups`, `downloads`, `resizing`, `metadata`, `imports` and `ledger`. Anything under a millisecond is left out. If `downloads` dominates, the [photo size](#photo-size) is the lever: **Small** takes a rendition Lightroom already holds and downloads nothing full-size.
+
+#### lrsync-check
 
 `lrsync-check` prints what the app sees for a share link, and can download the photos to a folder, without touching Photos:
 
