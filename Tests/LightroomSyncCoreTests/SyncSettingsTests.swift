@@ -54,6 +54,17 @@ final class SyncSettingsTests: XCTestCase {
         XCTAssertEqual(interval(100_000), "240 minutes", "beyond every range, clamped to the minutes cap")
     }
 
+    func testPhotoSizeDefaultsToTheLargestAndReachesTheEngine() {
+        XCTAssertEqual(SyncSettings.empty.photoSize, .large, "a fresh install syncs at a Pro Display XDR's width")
+        XCTAssertEqual(settings().normalized.photoSize, .large)
+
+        var small = settings()
+        small.photoSize = .small
+        XCTAssertEqual(small.normalized.photoSize, .small)
+        XCTAssertEqual(small.syncConfiguration(ignoreDelays: false).photoSize, .small)
+        XCTAssertNotEqual(small.normalized, settings().normalized, "changing the size is an unsaved change")
+    }
+
     func testUnitNamesAndClamping() {
         XCTAssertEqual(IntervalUnit.allCases, [.minutes, .hours, .days])
         XCTAssertEqual(IntervalUnit.hours.name(for: 1), "hour")

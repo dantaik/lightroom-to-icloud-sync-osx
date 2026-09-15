@@ -55,7 +55,8 @@ struct AboutView: View {
     }
 
     private let behaviour = [
-        "Every photo is fetched as a full-resolution JPEG with your Lightroom edits already applied, then added to your Photos library. With iCloud Photos on, Photos uploads it like any other picture.",
+        "Every photo arrives as a JPEG with your Lightroom edits already applied, then goes into your Photos library. With iCloud Photos on, Photos uploads it like any other picture.",
+        "Photo size decides how long that takes. Large, the default, is 6016 px on the long edge, which fills a Pro Display XDR pixel for pixel; Small is fetched straight from Lightroom's own 2048 px rendition and is by far the quickest; Original keeps every pixel Lightroom renders.",
         "A photo syncs once it has been in the album for at least the check interval, which leaves you that long to make your first edits.",
         "A photo is synced once and then never again, however often you edit it afterwards. The record lives in a ledger file on this Mac.",
         "Photos your library already holds are recognised and skipped, so a second Mac does not import the album a second time.",

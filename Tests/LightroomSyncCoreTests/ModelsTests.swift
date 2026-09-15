@@ -38,6 +38,10 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(first.hasEdits)
         XCTAssertEqual(first.originalSHA256?.count, 64)
         XCTAssertEqual(first.addedToAlbumAt, AdobeDate.parse("2024-09-18T21:07:30.325Z"))
+        XCTAssertEqual(Set(first.renditionHrefs.keys), ["2048", "1280", "640", "thumbnail2x", "fullsize"])
+        XCTAssertEqual(first.renditionHref(forType: "2048"),
+                       "assets/5dbd9a08573944d29afba1eb55658adc/revisions/8bb23965c2194a168fe1f0589b0fd72c/renditions/a7adebccd2d76288665e3f013260e289")
+        XCTAssertNil(first.renditionHref(forType: "4096"), "Lightroom lists no rendition above 2048")
         XCTAssertEqual(first.lastEditedAt, AdobeDate.parse("2024-09-18T21:07:30.325Z"),
                        "the generic asset.updated (2026) must not count as an edit")
         XCTAssertNotNil(first.captureDate)

@@ -11,6 +11,7 @@ final class SyncEngineTests: XCTestCase {
         let transport: FakeTransport
         let importer: FakeImporter
         let photoLibrary: FakePhotoLibrary
+        let resizer: FakeResizer
         let sink: RecordingSink
         let ledger: Ledger
         let engine: SyncEngine
@@ -26,23 +27,43 @@ final class SyncEngineTests: XCTestCase {
         let photoLibrary = FakePhotoLibrary()
         importer.library = photoLibrary
         let sink = RecordingSink()
+        let resizer = FakeResizer()
         let ledger = try Ledger(fileURL: directory.appendingPathComponent("ledger.json"))
         let engine = SyncEngine(client: LightroomGalleryClient(transport: transport), ledger: ledger, importer: importer,
-                                photoLibrary: photoLibrary,
+                                photoLibrary: photoLibrary, resizer: resizer,
                                 downloadDirectory: directory.appendingPathComponent("downloads"), settleTime: 120, sink: sink)
-        return Harness(transport: transport, importer: importer, photoLibrary: photoLibrary, sink: sink,
-                       ledger: ledger, engine: engine, directory: directory)
+        return Harness(transport: transport, importer: importer, photoLibrary: photoLibrary, resizer: resizer,
+                       sink: sink, ledger: ledger, engine: engine, directory: directory)
     }
 
-    private func config(ignoreDelays: Bool = false, albumName: String? = "Lightroom") -> SyncConfiguration {
+    private func config(ignoreDelays: Bool = false, albumName: String? = "Lightroom",
+                        size: PhotoSize = .default) -> SyncConfiguration {
         SyncConfiguration(shareLink: "https://lightroom.adobe.com/shares/\(share)", preferredAlbumID: nil,
-                          photosAlbumName: albumName, checkInterval: 15 * 60, ignoreDelays: ignoreDelays)
+                          photosAlbumName: albumName, checkInterval: 15 * 60, photoSize: size, ignoreDelays: ignoreDelays)
     }
 
     private func setDownload(_ harness: Harness, assetID: String, width: Int, height: Int) {
         harness.transport.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/\(assetID)",
                               headers: ["content-type": "image/jpeg", "content-disposition": "attachment; filename=\"\(assetID).jpg\""],
                               body: fakeJPEG(width: width, height: height))
+    }
+
+    /// The rendition `assetEntry` lists for a photo, which is what the small size asks for.
+    private func setRendition(_ harness: Harness, assetID: String, width: Int, height: Int) {
+        harness.transport.set("\(api)/assets/\(assetID)/renditions/x",
+                              headers: ["content-type": "image/jpeg"],
+                              body: fakeJPEG(width: width, height: height))
+    }
+
+    /// One photo old enough to sync, edited at 60 MP unless told otherwise.
+    @discardableResult
+    private func oneOldPhoto(_ harness: Harness, id: String = "p1", fileName: String = "P1000123.DNG",
+                             cropped: (Int, Int) = (9528, 6328)) -> Date {
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: id, fileName: fileName, added: old, edited: old, cropped: cropped),
+        ]))
+        return old
     }
 
     func testSyncsEligiblePhotosOnceAndLeavesRecentOnesWaiting() async throws {
@@ -148,6 +169,127 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertNil(harness.importer.requests.first?.albumName)
         XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("small.jpg") })
         XCTAssertTrue(harness.sink.lines.contains { $0.contains("[error]") && $0.contains("missing.jpg") })
+    }
+
+    // MARK: Photo size
+
+    func testTheSmallSizeTakesLightroomsOwnRenditionAndNeverTheFullSizeDownload() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness)
+        // No full-size download is canned at all: reaching for one would 404 and fail the photo.
+        setRendition(harness, assetID: "p1", width: 2048, height: 1360)
+
+        let report = try await harness.engine.run(config(size: .small))
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.downgraded, 0, "2048 px is the size that was asked for, not a downgrade")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 2048)
+        XCTAssertTrue(harness.resizer.requests.isEmpty, "a rendition arrives at the size it was asked for")
+        XCTAssertFalse(harness.transport.requests.contains { $0.host == "dl.lightroom.adobe.com" })
+        // A rendition carries no file name, so the name Photos stores is the one a second Mac
+        // looks the photo up by: the original's, as a JPEG.
+        XCTAssertEqual(harness.importer.requests.first?.originalFileName, "P1000123.jpg")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.fileName, "P1000123.jpg")
+    }
+
+    func testARenditionThatCannotBeFetchedFallsBackToTheFullSizeDownload() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness)
+        harness.transport.set("\(api)/assets/p1/renditions/x", status: 500, body: Data("boom".utf8))
+        setDownload(harness, assetID: "p1", width: 9528, height: 6328)
+
+        let report = try await harness.engine.run(config(size: .small))
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(harness.resizer.requests.map(\.maxLongEdge), [2048], "the full-size file is shrunk instead")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 2048)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("rendition") })
+    }
+
+    func testTheDefaultSizeShrinksWhatLightroomServedAndImportsTheSmallerFile() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness)
+        setDownload(harness, assetID: "p1", width: 9528, height: 6328)
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.downgraded, 0)
+        XCTAssertEqual(harness.resizer.requests.map(\.maxLongEdge), [PhotoSize.proDisplayXDRWidth])
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 6016, "a Pro Display XDR's width")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelHeight, 3996)
+        XCTAssertEqual(harness.importer.requests.first?.fileURL.lastPathComponent, "p1-6016.jpg")
+        // Both the download and the file made from it are cleaned up.
+        let left = try FileManager.default.contentsOfDirectory(atPath: harness.directory.appendingPathComponent("downloads").path)
+        XCTAssertEqual(left, [])
+    }
+
+    func testAPhotoAlreadyWithinTheSizeIsImportedUntouched() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        // A 12 MP photo is well inside Large, so nothing about it has to change.
+        oneOldPhoto(harness, cropped: (4000, 3000))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertTrue(harness.resizer.requests.isEmpty, "re-encoding a photo that is already small enough only costs quality")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 4000)
+        XCTAssertEqual(harness.importer.requests.first?.fileURL.lastPathComponent, "p1.jpg")
+    }
+
+    func testTheOriginalSizeKeepsEveryPixel() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness)
+        setDownload(harness, assetID: "p1", width: 9528, height: 6328)
+
+        let report = try await harness.engine.run(config(size: .original))
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertTrue(harness.resizer.requests.isEmpty)
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 9528)
+    }
+
+    func testAPhotoIsStillSyncedWhenItCannotBeResized() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness)
+        setDownload(harness, assetID: "p1", width: 9528, height: 6328)
+        harness.resizer.error = NSError(domain: "FakeResizer", code: 1,
+                                        userInfo: [NSLocalizedDescriptionKey: "simulated ImageIO failure"])
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.synced, 1, "too large beats never synced")
+        XCTAssertEqual(report.failed, 0)
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.pixelWidth, 9528)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("resize") })
+    }
+
+    func testASmartPreviewIsOnlyReportedWhenTheSizeDoesNotExplainIt() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "one.jpg", added: old, edited: old, cropped: (6000, 4000)),
+        ]))
+        // What a Lightroom Classic photo comes back as: a smart preview, far short of the edit.
+        setDownload(harness, assetID: "p1", width: 2048, height: 1365)
+
+        let full = try await harness.engine.run(config(size: .original))
+        XCTAssertEqual(full.downgraded, 1)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("smart previews") })
+
+        // Asking for 2048 px and getting 2048 px is not a downgrade, whatever the edit's size.
+        let second = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: second.directory) }
+        second.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "one.jpg", added: old, edited: old, cropped: (6000, 4000)),
+        ]))
+        setRendition(second, assetID: "p1", width: 2048, height: 1365)
+        let small = try await second.engine.run(config(size: .small))
+        XCTAssertEqual(small.synced, 1)
+        XCTAssertEqual(small.downgraded, 0)
+        XCTAssertEqual(second.ledger.state.entries["p1"]?.downgraded, false)
     }
 
     func testInvalidLinkAndAlbumSelection() async throws {

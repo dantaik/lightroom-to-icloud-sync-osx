@@ -5,14 +5,17 @@ public struct SyncConfiguration: Equatable {
     public var preferredAlbumID: String?
     public var photosAlbumName: String?
     public var checkInterval: TimeInterval
+    /// How large the synced photos should be.
+    public var photoSize: PhotoSize
     public var ignoreDelays: Bool
 
     public init(shareLink: String, preferredAlbumID: String? = nil, photosAlbumName: String? = nil,
-                checkInterval: TimeInterval, ignoreDelays: Bool = false) {
+                checkInterval: TimeInterval, photoSize: PhotoSize = .default, ignoreDelays: Bool = false) {
         self.shareLink = shareLink
         self.preferredAlbumID = preferredAlbumID
         self.photosAlbumName = photosAlbumName
         self.checkInterval = checkInterval
+        self.photoSize = photoSize
         self.ignoreDelays = ignoreDelays
     }
 }
@@ -74,6 +77,7 @@ public final class SyncEngine {
     private let ledger: Ledger
     private let importer: PhotoImporting
     private let photoLibrary: PhotoLibraryAccess
+    private let resizer: PhotoResizing
     private let downloadDirectory: URL
     private let settleTime: TimeInterval
     private weak var sink: SyncEventSink?
@@ -85,12 +89,14 @@ public final class SyncEngine {
 
     public init(client: LightroomGalleryClient, ledger: Ledger, importer: PhotoImporting,
                 photoLibrary: PhotoLibraryAccess = NullPhotoLibraryAccess(),
+                resizer: PhotoResizing = NoPhotoResizing(),
                 downloadDirectory: URL, settleTime: TimeInterval = SyncPolicy.defaultSettleTime,
                 sink: SyncEventSink?) {
         self.client = client
         self.ledger = ledger
         self.importer = importer
         self.photoLibrary = photoLibrary
+        self.resizer = resizer
         self.downloadDirectory = downloadDirectory
         self.settleTime = settleTime
         self.sink = sink
@@ -116,7 +122,7 @@ public final class SyncEngine {
         report.alreadySynced = photos.count - candidates.count
         let policy = SyncPolicy(minimumAgeInAlbum: config.checkInterval, settleTime: settleTime, ignoreDelays: config.ignoreDelays)
         let albumName = config.photosAlbumName.flatMap { $0.isEmpty ? nil : $0 }
-        log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced")
+        log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced, at \(config.photoSize.shortDescription)")
         await refileIntoAlbum(albumName, photos: photos, report: &report)
         sink?.progress(completed: 0, total: candidates.count)
 
@@ -158,7 +164,7 @@ public final class SyncEngine {
 
             let downloaded: DownloadedPhoto
             do {
-                downloaded = try await client.downloadFullSize(shareID: shareID, assetID: photo.assetID, to: downloadDirectory)
+                downloaded = try await download(photo, shareID: shareID, size: config.photoSize, name: name)
             } catch LightroomError.downloadsDisabled {
                 throw LightroomError.downloadsDisabled
             } catch {
@@ -167,31 +173,42 @@ public final class SyncEngine {
                 continue
             }
 
-            let size = JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL)
+            // What Lightroom served is measured against what the chosen size asks for, not against
+            // the edited photo: a photo held back by the size setting is doing what it was told.
+            let servedSize = JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL)
             var downgraded = false
-            if let size, let expected = photo.expectedLongEdge, size.longEdge + 2 < expected {
+            if let servedSize,
+               let intended = config.photoSize.intendedLongEdge(editedLongEdge: photo.expectedLongEdge),
+               servedSize.longEdge + 2 < intended {
                 downgraded = true
                 report.downgraded += 1
-                log(.warning, "\(name): Lightroom served \(size.width)×\(size.height) but the edited photo is \(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0). Photos synced from Lightroom Classic only have smart previews in the cloud.")
+                log(.warning, "\(name): Lightroom served \(servedSize.width)×\(servedSize.height) but the edited photo is \(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0). Photos synced from Lightroom Classic only have smart previews in the cloud.")
             }
 
-            let request = PhotoImportRequest(fileURL: downloaded.fileURL,
-                                             originalFileName: downloaded.fileName ?? photo.fileName,
+            let fileURL = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
+            if fileURL != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
+            let size = fileURL == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: fileURL) ?? servedSize)
+            // Lightroom serves a JPEG named after the original, and a rendition carries no name at
+            // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
+            let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
+
+            let request = PhotoImportRequest(fileURL: fileURL,
+                                             originalFileName: fileName,
                                              captureDate: photo.captureDate,
                                              albumName: albumName)
             let localIdentifier: String
             do {
                 localIdentifier = try await importer.importPhoto(request)
             } catch {
-                try? FileManager.default.removeItem(at: downloaded.fileURL)
+                try? FileManager.default.removeItem(at: fileURL)
                 report.failed += 1
                 log(.error, "Import into Photos failed for \(name): \(error.localizedDescription)")
                 continue
             }
-            try? FileManager.default.removeItem(at: downloaded.fileURL)
+            try? FileManager.default.removeItem(at: fileURL)
 
             try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
-                                          fileName: downloaded.fileName ?? photo.fileName,
+                                          fileName: fileName,
                                           originalSHA256: photo.originalSHA256,
                                           photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
                                           syncedAt: now, captureDate: photo.captureDate,
@@ -204,6 +221,41 @@ public final class SyncEngine {
 
         report.finishedAt = Date()
         return report
+    }
+
+    /// Fetches a photo at the chosen size.
+    ///
+    /// When Lightroom already holds a rendition of that size, that is what is fetched: it is
+    /// served as it stands, while the full-size file is rendered on demand and is many times
+    /// larger. Any bigger size has to come from the download host and is shrunk afterwards.
+    /// A rendition that cannot be fetched is not a failure; the full-size download still works.
+    private func download(_ photo: LightroomPhoto, shareID: String, size: PhotoSize, name: String) async throws -> DownloadedPhoto {
+        if let type = size.renditionType, let href = photo.renditionHref(forType: type) {
+            do {
+                return try await client.downloadRendition(shareID: shareID, assetID: photo.assetID,
+                                                          href: href, to: downloadDirectory)
+            } catch {
+                log(.warning, "\(name): the \(type) px rendition could not be fetched (\(error.localizedDescription)); downloading the full-size photo instead")
+            }
+        }
+        return try await client.downloadFullSize(shareID: shareID, assetID: photo.assetID, to: downloadDirectory)
+    }
+
+    /// Brings a photo that came back larger than the chosen size down to it, and returns the file
+    /// to import: the download itself when nothing had to change.
+    ///
+    /// Failing to resize is not failing to sync. The photo is imported as served, which is larger
+    /// than asked for rather than missing, and the log says so.
+    private func shrink(_ fileURL: URL, servedSize: JPEGInfo.PixelSize?, to size: PhotoSize, name: String) -> URL {
+        guard let maxLongEdge = size.maxLongEdge, let servedSize, servedSize.longEdge > maxLongEdge else {
+            return fileURL
+        }
+        do {
+            return try resizer.resized(fileAt: fileURL, maxLongEdge: maxLongEdge)
+        } catch {
+            log(.warning, "Could not resize \(name) to \(maxLongEdge) px (\(error.localizedDescription)); importing it at \(servedSize.width)×\(servedSize.height)")
+            return fileURL
+        }
     }
 
     /// Keeps the configured Photos album in step with what has already been synced.

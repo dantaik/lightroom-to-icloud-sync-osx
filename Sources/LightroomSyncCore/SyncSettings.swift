@@ -51,6 +51,9 @@ public struct SyncSettings: Equatable, Codable {
     /// How often to check, as a number of `intervalUnit`.
     public var intervalValue: Int
     public var intervalUnit: IntervalUnit
+    /// How large synced photos are. Full-size renders are slow to move and larger than any
+    /// screen, so the default caps them at a Pro Display XDR's width.
+    public var photoSize: PhotoSize
 
     public static let defaultIntervalValue = 15
     public static let defaultIntervalUnit = IntervalUnit.minutes
@@ -60,12 +63,13 @@ public struct SyncSettings: Equatable, Codable {
                                            intervalUnit: defaultIntervalUnit)
 
     public init(shareLink: String, albumID: String?, photosAlbumName: String,
-                intervalValue: Int, intervalUnit: IntervalUnit) {
+                intervalValue: Int, intervalUnit: IntervalUnit, photoSize: PhotoSize = .default) {
         self.shareLink = shareLink
         self.albumID = albumID
         self.photosAlbumName = photosAlbumName
         self.intervalValue = intervalValue
         self.intervalUnit = intervalUnit
+        self.photoSize = photoSize
     }
 
     /// The form that gets stored and used: trimmed, clamped, with empty text as nil.
@@ -77,7 +81,8 @@ public struct SyncSettings: Equatable, Codable {
             albumID: albumID.flatMap { $0.isEmpty ? nil : $0 },
             photosAlbumName: photosAlbumName.trimmingCharacters(in: .whitespacesAndNewlines),
             intervalValue: intervalUnit.clamp(intervalValue),
-            intervalUnit: intervalUnit
+            intervalUnit: intervalUnit,
+            photoSize: photoSize
         )
     }
 
@@ -116,6 +121,7 @@ public struct SyncSettings: Equatable, Codable {
                                  preferredAlbumID: settings.albumID,
                                  photosAlbumName: settings.photosAlbumName.isEmpty ? nil : settings.photosAlbumName,
                                  checkInterval: settings.checkInterval,
+                                 photoSize: settings.photoSize,
                                  ignoreDelays: ignoreDelays)
     }
 }

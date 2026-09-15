@@ -3,11 +3,11 @@
 # Lightroom Sync
 
 **A macOS menu bar app that copies a shared Lightroom album into iCloud Photos.**
-Full-resolution JPEGs with your edits applied, each photo synced once and never again.
+JPEGs with your edits applied, at a size you choose, each photo synced once and never again.
 
 <br clear="left">
 
-Lightroom Sync watches one album in **Lightroom** (the cloud-based Lightroom, not Lightroom Classic) and adds every photo in it to the Photos library on your Mac, as a full-resolution JPEG with your edits already applied. With iCloud Photos enabled, Photos uploads it like any other picture, so the album reaches your iPhone and iPad.
+Lightroom Sync watches one album in **Lightroom** (the cloud-based Lightroom, not Lightroom Classic) and adds every photo in it to the Photos library on your Mac, as a JPEG with your edits already applied. By default each photo is 6016 pixels on the long edge, which fills a Pro Display XDR pixel for pixel; [two smaller sizes and the uncapped original](#photo-size) are a menu away. With iCloud Photos enabled, Photos uploads it like any other picture, so the album reaches your iPhone and iPad.
 
 It needs no Adobe developer account, no API key and no Lightroom Classic. It reads the same endpoints Lightroom's own web gallery uses for a shared album; see [How it works](#how-it-works).
 
@@ -97,8 +97,9 @@ plutil -extract CFBundleIconFile raw /Applications/LightroomSync.app/Contents/In
 1. **Share the album from Lightroom.** Open the album in Lightroom (desktop, web or mobile), choose *Share & Invite*, set *Link access* to **Anyone can view**, and under *Link settings* turn on **Allow downloads**. Copy the link; it looks like `https://adobe.ly/…` or `https://lightroom.adobe.com/shares/…`.
 2. Click the menu bar icon and paste the link into *Lightroom album share link*.
 3. Optionally name a **Photos album**. The app creates it if it does not exist. Leave it empty to add photos to the library only.
-4. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
-5. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
+4. Choose a **Photo size**. Large is the default; see [Photo size](#photo-size).
+5. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
+6. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
 
 The ⓘ button in the panel's top right corner summarises the same behaviour and limits described below, and links to this repository.
 
@@ -124,6 +125,22 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 - The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** checks immediately and ignores both delays.
 - Videos are listed but skipped. Only photos are synced.
+- Each photo is capped at the [photo size](#photo-size) you chose, 6016 px on the long edge by default.
+
+### Photo size
+
+A full-size render from a modern camera is 40–60 megapixels and 20–30 MB. That is more than any screen can show, and it is what makes a sync slow: Lightroom builds the file on demand, then Photos has to carry it up to iCloud and down onto every device. The **Photo size** menu caps the long edge instead.
+
+| Size | Long edge | What it is for |
+|---|---|---|
+| **Large** (default) | 6016 px | A Pro Display XDR is 6016 × 3384, so a landscape photo is a desktop background for it with nothing scaled. Native on every smaller display too. |
+| **Medium** | 3840 px | 4K. Native on any display but the XDR, at a quarter of Large's pixels. |
+| **Small** | 2048 px | Plenty for an iPhone or iPad. **By far the quickest**, because Lightroom already holds a 2048 px rendition: nothing full-size is downloaded at all. |
+| **Original** | — | Every pixel Lightroom renders, which is what the app did before sizes existed. |
+
+Large, Medium and Original come from the same full-size download. Large and Medium are then scaled down on your Mac with ImageIO, which keeps the EXIF, the XMP and the colour profile, and re-encodes at JPEG quality 0.9. A photo that is already smaller than the size you picked is imported exactly as it arrived, never re-encoded and never enlarged.
+
+Changing the size affects photos synced from then on. A photo already in the ledger is never synced again, so it stays at the size it was imported at.
 
 ### The Photos album
 
@@ -179,9 +196,12 @@ GET https://lightroom.adobe.com/v2c/spaces/{shareID}/resources             the a
 GET https://lightroom.adobe.com/v2c/spaces/{shareID}/albums/{albumID}/assets?embed=asset
                                                                            photos with timestamps, edit state, file names
 GET https://dl.lightroom.adobe.com/spaces/{shareID}/assets/{assetID}       full-size edited JPEG (403 when downloads are off)
+GET https://lightroom.adobe.com/v2c/spaces/{shareID}/{rendition href}      an edited JPEG Lightroom already holds: 2048, 1280, 640
 ```
 
-The last call is exactly what the gallery's *Download* button does. For photos whose originals live in Lightroom's cloud it returns a JPEG at the edited photo's full pixel size, with EXIF, XMP and the ICC profile embedded. Photos that only reached the cloud as smart previews (synced from Lightroom Classic) come back at 2048 px; the app imports them anyway and logs a warning.
+The download call is exactly what the gallery's *Download* button does. For photos whose originals live in Lightroom's cloud it returns a JPEG at the edited photo's full pixel size, with EXIF, XMP and the ICC profile embedded. Photos that only reached the cloud as smart previews (synced from Lightroom Classic) come back at 2048 px; the app imports them anyway and logs a warning.
+
+The rendition call is what the gallery shows on screen. Each asset in the listing carries a `/rels/rendition_type/2048` link, and the file behind it is already built, so the **Small** size skips the download host altogether and arrives in a fraction of the time. Nothing above 2048 px is offered that way, so the larger sizes take the full-size download and are scaled down on the Mac. A rendition that cannot be fetched is not fatal: the app logs it and falls back to the full-size download.
 
 On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest`), sets the capture date, adds it to the chosen album, and records the Photos identifier in the ledger. Before importing, it looks for an existing asset with `PHAsset.fetchAssets` narrowed by creation date, comparing each candidate's original file name from `PHAssetResource`.
 
@@ -189,8 +209,9 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 
 - **These endpoints are not documented by Adobe** and could change. The app fails loudly, in the menu bar icon and the log, rather than doing something odd if the responses stop making sense.
 - **Sharing by link means anyone with the link can view and download the album.** The link is unguessable, but treat it as a secret. Invite-only shares cannot be read without an Adobe login.
-- Photos synced to Adobe's cloud from Lightroom Classic exist there only as smart previews, so they arrive at 2048 px on the long edge.
+- Photos synced to Adobe's cloud from Lightroom Classic exist there only as smart previews, so they arrive at 2048 px on the long edge whatever size you choose. The log says when that happens.
 - You get a rendered JPEG, not the RAW original. Videos and Live Photos are skipped.
+- A photo synced at one size is never synced again at another; the ledger has already recorded it.
 - The app polls with one small JSON request per interval, and only contacts the download host for new photos. The default is every 15 minutes; the control accepts up to 240 minutes, 48 hours or 30 days.
 - Not affiliated with, or endorsed by, Adobe or Apple.
 
@@ -199,7 +220,8 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 ```
 Sources/LightroomSyncCore    platform-independent logic: share-link parsing, gallery client,
                              sync policy and settings, ledger, engine. Builds and tests on Linux too.
-Sources/LightroomSync        the macOS menu bar app (SwiftUI MenuBarExtra + PhotoKit)
+Sources/LightroomSync        the macOS menu bar app (SwiftUI MenuBarExtra + PhotoKit,
+                             ImageIO for scaling photos down to the chosen size)
 Sources/lrsync-check         command-line diagnostics
 Tests/LightroomSyncCoreTests unit tests, with captured (anonymized) gallery responses as fixtures
 Resources/AppIcon.icns       the app icon, generated by scripts/make-icon.py
