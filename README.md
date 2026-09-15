@@ -21,6 +21,10 @@ No Adobe developer account, no Lightroom Classic, no Adobe API key. It uses the 
 4. Optionally type a **Photos album** name. The app creates it if needed and adds every synced photo to it. Leave it empty to add photos to the library only.
 5. Set **Check every N min** and, if you like, **Start at login**.
 
+Settings take effect as you type them, but a scheduled check never starts until you have left them
+alone for a few seconds, so a check cannot run against a half-typed album name. **Sync now** always
+uses what is on screen.
+
 That's it. The app checks the album on that interval and on every launch.
 
 ### Sync rules
@@ -31,8 +35,25 @@ That's it. The app checks the album on that interval and on every launch.
 - If the same original (same file hash) appears twice in the album, it is imported once.
 - Before downloading anything, the app asks Photos whether the photo is already there. See
   [Using two Macs](#using-two-macs).
+- The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** in the panel checks immediately and ignores both delays.
 - Videos are listed but skipped. Only photos are synced.
+
+### The Photos album
+
+Deleting an album in Photos does not delete the photos in it, and a photo the app has already synced
+is never synced again. Left alone, that combination would mean a deleted album stays empty forever
+and a check reports that there is nothing to do.
+
+So every check also makes sure the configured album holds the photos that have been synced from the
+Lightroom album. It puts them back when the album is missing, which is what happens if you delete
+it, and when you change the album name in the settings, which moves the synced photos into the new
+album. Correcting a name is therefore enough to repair a wrong one; the empty album with the old
+name stays behind for you to delete.
+
+A photo you took out of an album that still exists is left out: that is a deliberate act, not a
+missing album. A photo deleted from the Photos library altogether is not re-imported either, since
+the ledger still records it as synced; the log says how many are in that state.
 
 ### Using two Macs
 

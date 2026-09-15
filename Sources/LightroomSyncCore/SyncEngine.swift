@@ -28,6 +28,8 @@ public struct SyncReport: Equatable {
     public var duplicates = 0
     /// Photos that Photos already held, so they were recorded without downloading.
     public var foundInPhotos = 0
+    /// Already-synced photos that were put back into the configured album.
+    public var refiled = 0
     public var failed = 0
     public var downgraded = 0
     public var startedAt: Date
@@ -71,7 +73,7 @@ public final class SyncEngine {
     private let client: LightroomGalleryClient
     private let ledger: Ledger
     private let importer: PhotoImporting
-    private let photoLibrary: PhotoLibraryLookup
+    private let photoLibrary: PhotoLibraryAccess
     private let downloadDirectory: URL
     private let settleTime: TimeInterval
     private weak var sink: SyncEventSink?
@@ -82,7 +84,7 @@ public final class SyncEngine {
     public static let captureDateTolerance: TimeInterval = 26 * 3600
 
     public init(client: LightroomGalleryClient, ledger: Ledger, importer: PhotoImporting,
-                photoLibrary: PhotoLibraryLookup = NullPhotoLibraryLookup(),
+                photoLibrary: PhotoLibraryAccess = NullPhotoLibraryAccess(),
                 downloadDirectory: URL, settleTime: TimeInterval = SyncPolicy.defaultSettleTime,
                 sink: SyncEventSink?) {
         self.client = client
@@ -115,6 +117,7 @@ public final class SyncEngine {
         let policy = SyncPolicy(minimumAgeInAlbum: config.checkInterval, settleTime: settleTime, ignoreDelays: config.ignoreDelays)
         let albumName = config.photosAlbumName.flatMap { $0.isEmpty ? nil : $0 }
         log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced")
+        await refileIntoAlbum(albumName, photos: photos, report: &report)
         sink?.progress(completed: 0, total: candidates.count)
 
         for (index, photo) in candidates.enumerated() {
@@ -138,9 +141,9 @@ public final class SyncEngine {
                 try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
                                               fileName: photo.expectedPhotosFileName ?? photo.fileName,
                                               originalSHA256: photo.originalSHA256,
-                                              photosLocalIdentifier: identifier, syncedAt: now,
-                                              captureDate: photo.captureDate, pixelWidth: nil,
-                                              pixelHeight: nil, downgraded: false))
+                                              photosLocalIdentifier: identifier, photosAlbumName: albumName,
+                                              syncedAt: now, captureDate: photo.captureDate,
+                                              pixelWidth: nil, pixelHeight: nil, downgraded: false))
                 report.foundInPhotos += 1
                 log(.info, "\(name) is already in Photos; recorded it without downloading")
                 continue
@@ -190,9 +193,10 @@ public final class SyncEngine {
             try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
                                           fileName: downloaded.fileName ?? photo.fileName,
                                           originalSHA256: photo.originalSHA256,
-                                          photosLocalIdentifier: localIdentifier, syncedAt: now,
-                                          captureDate: photo.captureDate, pixelWidth: size?.width,
-                                          pixelHeight: size?.height, downgraded: downgraded))
+                                          photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
+                                          syncedAt: now, captureDate: photo.captureDate,
+                                          pixelWidth: size?.width, pixelHeight: size?.height,
+                                          downgraded: downgraded))
             report.synced += 1
             let dimensions = size.map { " (\($0.width)×\($0.height))" } ?? ""
             log(.info, "Synced \(name)\(dimensions)")
@@ -200,6 +204,66 @@ public final class SyncEngine {
 
         report.finishedAt = Date()
         return report
+    }
+
+    /// Keeps the configured Photos album in step with what has already been synced.
+    ///
+    /// Deleting an album in Photos does not delete its photos, and renaming the album in the
+    /// settings leaves the old one behind. In both cases the photos are still in the library, so
+    /// the ledger rightly refuses to sync them again and nothing at all would happen. Putting them
+    /// back into the album is the repair: it costs one album lookup per pass and does nothing once
+    /// the album matches what the ledger recorded.
+    private func refileIntoAlbum(_ albumName: String?, photos: [LightroomPhoto], report: inout SyncReport) async {
+        guard let albumName else { return }
+        let synced = photos.compactMap { ledger.state.entries[$0.assetID] }
+        guard !synced.isEmpty else { return }
+
+        let albumMissing: Bool
+        do {
+            albumMissing = try await !photoLibrary.albumExists(named: albumName)
+        } catch {
+            log(.warning, "Could not check the album “\(albumName)”: \(error.localizedDescription)")
+            return
+        }
+
+        // Only a missing album or a changed album name counts. A photo taken out of an album that
+        // still exists was taken out on purpose, and is left alone.
+        let stale = synced.filter { albumMissing || $0.photosAlbumName != albumName }
+        var identifiers: [String] = []
+        for entry in stale {
+            if let identifier = entry.photosLocalIdentifier, !identifiers.contains(identifier) {
+                identifiers.append(identifier)
+            }
+        }
+        guard !identifiers.isEmpty else { return }
+
+        do {
+            let filed = Set(try await photoLibrary.addAssets(withIdentifiers: identifiers, toAlbumNamed: albumName))
+            let assetIDs = stale
+                .filter { $0.photosLocalIdentifier.map(filed.contains) ?? false }
+                .map(\.assetID)
+            try ledger.markFiled(assetIDs, inAlbum: albumName)
+            report.refiled = assetIDs.count
+            if !assetIDs.isEmpty {
+                log(.info, "Put \(assetIDs.count) already-synced photo(s) back into “\(albumName)” because \(Self.refileReason(stale, albumName: albumName))")
+            }
+            if assetIDs.count < identifiers.count {
+                log(.warning, "\(identifiers.count - assetIDs.count) synced photo(s) are no longer in the Photos library; they are not re-imported")
+            }
+        } catch {
+            log(.warning, "Could not add photos to the album “\(albumName)”: \(error.localizedDescription)")
+        }
+    }
+
+    /// Says why photos are being put back, which is what the log line has to explain.
+    static func refileReason(_ stale: [LedgerEntry], albumName: String) -> String {
+        if stale.allSatisfy({ $0.photosAlbumName == albumName }) {
+            return "the album was missing"
+        }
+        if stale.contains(where: { $0.photosAlbumName != nil && $0.photosAlbumName != albumName }) {
+            return "the album changed"
+        }
+        return "they were synced before the album was recorded"
     }
 
     /// Asks Photos whether this photo is already there, so a second Mac does not import it again.

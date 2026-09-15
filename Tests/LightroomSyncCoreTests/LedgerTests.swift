@@ -26,6 +26,32 @@ final class LedgerTests: XCTestCase {
         XCTAssertEqual(reloaded.syncedCount, 1)
     }
 
+    func testLedgerWrittenBeforeAlbumsWereTrackedStillLoads() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("ledger.json")
+        // Exactly the shape the first release wrote: no photosAlbumName anywhere.
+        let json = """
+        {
+          "entries": {
+            "asset-1": {
+              "albumID": "b", "assetID": "asset-1", "downgraded": false, "fileName": "a.jpg",
+              "photosLocalIdentifier": "local-1", "shareID": "s", "syncedAt": "2026-09-14T15:00:00Z"
+            }
+          },
+          "firstSeen": {}
+        }
+        """
+        try Data(json.utf8).write(to: url)
+
+        let ledger = try Ledger(fileURL: url)
+        XCTAssertTrue(ledger.contains(assetID: "asset-1"))
+        XCTAssertNil(ledger.state.entries["asset-1"]?.photosAlbumName, "an unknown album, not a crash")
+
+        try ledger.markFiled(["asset-1", "unknown"], inAlbum: "Lightroom")
+        XCTAssertEqual(try Ledger(fileURL: url).state.entries["asset-1"]?.photosAlbumName, "Lightroom")
+    }
+
     func testCorruptLedgerIsReportedNotSilentlyReplaced() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

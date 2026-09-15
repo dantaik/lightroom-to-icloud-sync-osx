@@ -47,6 +47,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard shareLink != oldValue else { return }
             defaults.set(shareLink, forKey: Keys.shareLink)
+            settingsChanged()
             scheduleShareValidation()
         }
     }
@@ -55,6 +56,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard selectedAlbumID != oldValue else { return }
             defaults.set(selectedAlbumID, forKey: Keys.albumID)
+            settingsChanged()
         }
     }
 
@@ -62,6 +64,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard photosAlbumName != oldValue else { return }
             defaults.set(photosAlbumName, forKey: Keys.photosAlbum)
+            settingsChanged()
         }
     }
 
@@ -69,6 +72,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard intervalMinutes != oldValue else { return }
             defaults.set(intervalMinutes, forKey: Keys.interval)
+            settingsChanged()
         }
     }
 
@@ -97,6 +101,7 @@ final class AppModel: ObservableObject {
     private var loopTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
     private var lastAttemptAt: Date?
+    private var lastSettingsChangeAt: Date?
 
     init() {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
@@ -286,11 +291,19 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Records that a setting was just edited. The panel writes every keystroke straight through,
+    /// so an automatic pass must not start until the typing has stopped.
+    private func settingsChanged() {
+        lastSettingsChangeAt = Date()
+    }
+
     private func tick() async {
         guard !isSyncing, engine != nil else { return }
         guard !shareLink.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let interval = TimeInterval(intervalMinutes * 60)
-        if let lastAttemptAt, Date().timeIntervalSince(lastAttemptAt) < interval { return }
+        let schedule = SyncSchedule(interval: TimeInterval(intervalMinutes * 60))
+        guard schedule.shouldStart(now: Date(), lastAttempt: lastAttemptAt, lastSettingsChange: lastSettingsChangeAt) else {
+            return
+        }
         await runSync(ignoreDelays: false)
     }
 
@@ -312,6 +325,7 @@ final class AppModel: ObservableObject {
             phase = .idle
             var summary = "Check finished: \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed"
             if report.foundInPhotos > 0 { summary += ", \(report.foundInPhotos) already in Photos" }
+            if report.refiled > 0 { summary += ", \(report.refiled) put back into “\(trimmedAlbum)”" }
             bridge.log(.info, summary)
         } catch is CancellationError {
             phase = .idle

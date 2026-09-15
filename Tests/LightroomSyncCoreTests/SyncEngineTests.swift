@@ -24,6 +24,7 @@ final class SyncEngineTests: XCTestCase {
         transport.setJSON("\(api)/resources", #"{"base": "x", "resources": [{"id": "\#(album)", "type": "album", "subtype": "collection", "payload": {"name": "Test album"}, "links": {"self": {"href": "spaces/\#(share)/albums/\#(album)"}}}]}"#)
         let importer = FakeImporter()
         let photoLibrary = FakePhotoLibrary()
+        importer.library = photoLibrary
         let sink = RecordingSink()
         let ledger = try Ledger(fileURL: directory.appendingPathComponent("ledger.json"))
         let engine = SyncEngine(client: LightroomGalleryClient(transport: transport), ledger: ledger, importer: importer,
@@ -272,5 +273,115 @@ extension SyncEngineTests {
         let report = try await harness.engine.run(config())
         XCTAssertTrue(harness.photoLibrary.queries.isEmpty, "without a date the query would scan the whole library")
         XCTAssertEqual(report.synced, 1)
+    }
+}
+
+// MARK: - Keeping the configured Photos album in step
+
+extension SyncEngineTests {
+    /// Sets up one photo synced into `album`, and returns its Photos identifier.
+    private func syncOnePhoto(into harness: Harness, album: String?) async throws -> String {
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "a.jpg", sha: "sha-1", added: old, edited: old),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+        let report = try await harness.engine.run(config(albumName: album))
+        XCTAssertEqual(report.synced, 1)
+        return try XCTUnwrap(harness.ledger.state.entries["p1"]?.photosLocalIdentifier)
+    }
+
+    func testDeletingTheAlbumInPhotosPutsSyncedPhotosBackIntoIt() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let identifier = try await syncOnePhoto(into: harness, album: "Lightroom")
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.photosAlbumName, "Lightroom")
+        XCTAssertEqual(harness.photoLibrary.albums["Lightroom"], [identifier])
+
+        // The user deletes the album in Photos. The photo itself stays in the library.
+        harness.photoLibrary.albums.removeValue(forKey: "Lightroom")
+        harness.photoLibrary.addCalls.removeAll()
+
+        let report = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(report.synced, 0, "the photo is not downloaded or imported again")
+        XCTAssertEqual(report.alreadySynced, 1)
+        XCTAssertEqual(report.refiled, 1)
+        XCTAssertEqual(harness.photoLibrary.albums["Lightroom"], [identifier], "the album is recreated")
+        XCTAssertEqual(harness.importer.requests.count, 1)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("back into “Lightroom”") && $0.contains("album was missing") })
+    }
+
+    func testChangingTheAlbumNameMovesSyncedPhotosIntoTheNewAlbum() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        // A half-typed name is exactly how the wrong album gets created in the first place.
+        let identifier = try await syncOnePhoto(into: harness, album: "Lightroo")
+        XCTAssertEqual(harness.photoLibrary.albums["Lightroo"], [identifier])
+
+        let report = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(report.refiled, 1)
+        XCTAssertEqual(report.synced, 0)
+        XCTAssertEqual(harness.photoLibrary.albums["Lightroom"], [identifier])
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.photosAlbumName, "Lightroom")
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("album changed") })
+    }
+
+    func testAnUnchangedAlbumIsLeftAlone() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        _ = try await syncOnePhoto(into: harness, album: "Lightroom")
+        harness.photoLibrary.addCalls.removeAll()
+
+        let report = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(report.refiled, 0)
+        XCTAssertTrue(harness.photoLibrary.addCalls.isEmpty, "a photo taken out of an existing album stays out")
+    }
+
+    func testWithoutAConfiguredAlbumNothingIsChecked() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        _ = try await syncOnePhoto(into: harness, album: nil)
+        let report = try await harness.engine.run(config(albumName: nil))
+        XCTAssertEqual(report.refiled, 0)
+        XCTAssertTrue(harness.photoLibrary.albumExistsCalls.isEmpty)
+    }
+
+    func testPhotoDeletedFromTheLibraryIsReportedNotReimported() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let identifier = try await syncOnePhoto(into: harness, album: "Lightroom")
+        harness.photoLibrary.albums.removeValue(forKey: "Lightroom")
+        harness.photoLibrary.deletedIdentifiers.insert(identifier)
+
+        let report = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(report.refiled, 0)
+        XCTAssertEqual(report.synced, 0, "the ledger still says this photo was synced")
+        XCTAssertEqual(harness.importer.requests.count, 1)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("no longer in the Photos library") })
+    }
+
+    func testAlbumCheckFailureDoesNotStopThePass() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        _ = try await syncOnePhoto(into: harness, album: "Lightroom")
+        harness.photoLibrary.error = NSError(domain: "Photos", code: 2, userInfo: [NSLocalizedDescriptionKey: "no access"])
+
+        let report = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(report.refiled, 0)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("Could not check the album") })
+    }
+}
+
+extension SyncEngineTests {
+    func testRefileReasonNamesWhatActuallyHappened() {
+        func entry(album: String?) -> LedgerEntry {
+            LedgerEntry(assetID: "a", shareID: "s", albumID: "b", fileName: nil, originalSHA256: nil,
+                        photosLocalIdentifier: "local-1", photosAlbumName: album, syncedAt: Date(),
+                        captureDate: nil, pixelWidth: nil, pixelHeight: nil, downgraded: false)
+        }
+        XCTAssertEqual(SyncEngine.refileReason([entry(album: "Lightroom")], albumName: "Lightroom"), "the album was missing")
+        XCTAssertEqual(SyncEngine.refileReason([entry(album: "Lightroo")], albumName: "Lightroom"), "the album changed")
+        XCTAssertEqual(SyncEngine.refileReason([entry(album: nil)], albumName: "Lightroom"),
+                       "they were synced before the album was recorded")
     }
 }

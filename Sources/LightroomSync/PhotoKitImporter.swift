@@ -65,7 +65,7 @@ final class PhotoKitImporter: PhotoImporting {
         guard status == .authorized else { throw PhotoKitImportError.notAuthorized(status) }
     }
 
-    private static func existingAlbum(named name: String) -> PHAssetCollection? {
+    static func existingAlbum(named name: String) -> PHAssetCollection? {
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "title == %@", name)
         return PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: options).firstObject
@@ -74,7 +74,7 @@ final class PhotoKitImporter: PhotoImporting {
 
 // MARK: - Finding photos that are already in the library
 
-extension PhotoKitImporter: PhotoLibraryLookup {
+extension PhotoKitImporter: PhotoLibraryAccess {
     /// Finds an asset with the same original file name and roughly the same capture date.
     ///
     /// This is what keeps a second Mac from importing everything again: its local ledger is empty,
@@ -118,6 +118,44 @@ extension PhotoKitImporter: PhotoLibraryLookup {
         let resources = PHAssetResource.assetResources(for: asset)
         let photo = resources.first { $0.type == .photo } ?? resources.first
         return photo?.originalFilename
+    }
+
+    func albumExists(named name: String) async throws -> Bool {
+        try await ensureAuthorized()
+        return Self.existingAlbum(named: name) != nil
+    }
+
+    /// Adds assets back into an album, recreating the album when it has been deleted. Assets that
+    /// are already in it are left alone, so Photos does not end up with two references to one
+    /// photo, and assets that no longer exist in the library are simply not returned.
+    func addAssets(withIdentifiers identifiers: [String], toAlbumNamed name: String) async throws -> [String] {
+        try await ensureAuthorized()
+        var assets: [PHAsset] = []
+        PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil).enumerateObjects { asset, _, _ in
+            assets.append(asset)
+        }
+        guard !assets.isEmpty else { return [] }
+
+        let album = Self.existingAlbum(named: name)
+        var alreadyInAlbum: Set<String> = []
+        if let album {
+            PHAsset.fetchAssets(in: album, options: nil).enumerateObjects { asset, _, _ in
+                alreadyInAlbum.insert(asset.localIdentifier)
+            }
+        }
+        let missing = assets.filter { !alreadyInAlbum.contains($0.localIdentifier) }
+        if !missing.isEmpty {
+            try await PHPhotoLibrary.shared().performChanges {
+                let request: PHAssetCollectionChangeRequest?
+                if let album {
+                    request = PHAssetCollectionChangeRequest(for: album)
+                } else {
+                    request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: name)
+                }
+                request?.addAssets(missing as NSArray)
+            }
+        }
+        return assets.map(\.localIdentifier)
     }
 
     /// Keeps the configured album complete when the photo itself was already in the library.

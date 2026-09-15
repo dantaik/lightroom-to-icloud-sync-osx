@@ -52,15 +52,28 @@ public struct PhotoMatchQuery: Equatable {
     }
 }
 
-/// Looks for a photo that is already in the Photos library, so it is not imported twice.
-public protocol PhotoLibraryLookup {
+/// The parts of the Photos library the sync engine needs: finding a photo that is already there,
+/// and keeping the configured album in step with what has been synced.
+public protocol PhotoLibraryAccess {
     /// Returns the Photos local identifier of a matching asset, or nil when there is none.
     func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String?
+
+    /// Whether an album with this name exists in the library.
+    func albumExists(named name: String) async throws -> Bool
+
+    /// Adds these assets to the named album, creating the album if it is gone, and skipping the
+    /// ones that are in it already. Returns the identifiers that are now in the album; identifiers
+    /// of assets that no longer exist in the library are left out.
+    func addAssets(withIdentifiers identifiers: [String], toAlbumNamed name: String) async throws -> [String]
 }
 
-/// A lookup that never finds anything, for callers that do not have a Photos library.
-public struct NullPhotoLibraryLookup: PhotoLibraryLookup {
+/// A library that holds nothing, for callers that have no Photos library.
+public struct NullPhotoLibraryAccess: PhotoLibraryAccess {
     public init() {}
 
     public func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? { nil }
+
+    public func albumExists(named name: String) async throws -> Bool { false }
+
+    public func addAssets(withIdentifiers identifiers: [String], toAlbumNamed name: String) async throws -> [String] { [] }
 }

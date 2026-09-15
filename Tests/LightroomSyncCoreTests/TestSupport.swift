@@ -65,6 +65,8 @@ final class FakeImporter: PhotoImporting {
     var requests: [PhotoImportRequest] = []
     var failNext = false
     var identifiers = 0
+    /// Set so that importing files the photo into the library's album, as PhotoKit does.
+    weak var library: FakePhotoLibrary?
 
     func importPhoto(_ request: PhotoImportRequest) async throws -> String {
         requests.append(request)
@@ -75,20 +77,50 @@ final class FakeImporter: PhotoImporting {
         // Behave like PhotoKit with shouldMoveFile: the file is consumed.
         try? FileManager.default.removeItem(at: request.fileURL)
         identifiers += 1
-        return "local-\(identifiers)"
+        let identifier = "local-\(identifiers)"
+        library?.file(identifier, inAlbum: request.albumName)
+        return identifier
     }
 }
 
-final class FakePhotoLibrary: PhotoLibraryLookup {
+/// Stands in for the Photos library: which assets it holds and which album each one is in.
+final class FakePhotoLibrary: PhotoLibraryAccess {
     /// Local identifiers keyed by the file name the library is asked about.
     var identifiers: [String: String] = [:]
+    /// Album name to the identifiers currently in it.
+    var albums: [String: Set<String>] = [:]
+    /// Assets the user has deleted from the library outright.
+    var deletedIdentifiers: Set<String> = []
+
     var queries: [PhotoMatchQuery] = []
+    var albumExistsCalls: [String] = []
+    var addCalls: [(identifiers: [String], album: String)] = []
     var error: Error?
 
     func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? {
         queries.append(query)
         if let error { throw error }
         return identifiers[query.fileName]
+    }
+
+    func albumExists(named name: String) async throws -> Bool {
+        albumExistsCalls.append(name)
+        if let error { throw error }
+        return albums[name] != nil
+    }
+
+    func addAssets(withIdentifiers identifiers: [String], toAlbumNamed name: String) async throws -> [String] {
+        addCalls.append((identifiers, name))
+        if let error { throw error }
+        let live = identifiers.filter { !deletedIdentifiers.contains($0) }
+        albums[name, default: []].formUnion(live)
+        return live
+    }
+
+    /// What PhotoKit does when a photo is imported with an album name.
+    func file(_ identifier: String, inAlbum name: String?) {
+        guard let name else { return }
+        albums[name, default: []].insert(identifier)
     }
 }
 

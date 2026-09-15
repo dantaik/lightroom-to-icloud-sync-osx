@@ -8,6 +8,9 @@ public struct LedgerEntry: Codable, Equatable {
     public var fileName: String?
     public var originalSHA256: String?
     public var photosLocalIdentifier: String?
+    /// The Photos album the photo was filed into, so a later change of album can be repaired.
+    /// Absent in ledgers written before this was tracked, which reads as "album unknown".
+    public var photosAlbumName: String?
     public var syncedAt: Date
     public var captureDate: Date?
     public var pixelWidth: Int?
@@ -16,14 +19,15 @@ public struct LedgerEntry: Codable, Equatable {
     public var downgraded: Bool
 
     public init(assetID: String, shareID: String, albumID: String, fileName: String?, originalSHA256: String?,
-                photosLocalIdentifier: String?, syncedAt: Date, captureDate: Date?, pixelWidth: Int?,
-                pixelHeight: Int?, downgraded: Bool) {
+                photosLocalIdentifier: String?, photosAlbumName: String? = nil, syncedAt: Date,
+                captureDate: Date?, pixelWidth: Int?, pixelHeight: Int?, downgraded: Bool) {
         self.assetID = assetID
         self.shareID = shareID
         self.albumID = albumID
         self.fileName = fileName
         self.originalSHA256 = originalSHA256
         self.photosLocalIdentifier = photosLocalIdentifier
+        self.photosAlbumName = photosAlbumName
         self.syncedAt = syncedAt
         self.captureDate = captureDate
         self.pixelWidth = pixelWidth
@@ -76,6 +80,17 @@ public final class Ledger {
         state.firstSeen[assetID] = date
         try save()
         return date
+    }
+
+    /// Notes that these photos are now in `albumName`, after they were put back into it.
+    public func markFiled(_ assetIDs: [String], inAlbum albumName: String?) throws {
+        var changed = false
+        for assetID in assetIDs where state.entries[assetID] != nil {
+            guard state.entries[assetID]?.photosAlbumName != albumName else { continue }
+            state.entries[assetID]?.photosAlbumName = albumName
+            changed = true
+        }
+        if changed { try save() }
     }
 
     public func record(_ entry: LedgerEntry) throws {
