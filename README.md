@@ -7,6 +7,8 @@ JPEGs with your edits applied, at a size you choose, each photo synced once and 
 
 <br clear="left">
 
+[![CI](https://github.com/dantaik/lightroom-to-icloud-sync-osx/actions/workflows/ci.yml/badge.svg)](https://github.com/dantaik/lightroom-to-icloud-sync-osx/actions/workflows/ci.yml)
+
 Lightroom Sync watches one album in **Lightroom** (the cloud-based Lightroom, not Lightroom Classic) and adds every photo in it to the Photos library on your Mac, as a JPEG with your edits already applied. By default each photo is 6016 pixels on the long edge, which fills a Pro Display XDR pixel for pixel; [two smaller sizes and the uncapped original](#photo-size) are a menu away. With iCloud Photos enabled, Photos uploads it like any other picture, so the album reaches your iPhone and iPad.
 
 It needs no Adobe developer account, no API key and no Lightroom Classic. It reads the same endpoints Lightroom's own web gallery uses for a shared album; see [How it works](#how-it-works).
@@ -69,6 +71,8 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 ```
 
 The same tests also run on Linux, which is where the sync logic was developed and verified. Building the app itself never needs full Xcode.
+
+Every push and pull request runs the same tests on both Linux and macOS through GitHub Actions, which also builds `LightroomSync.app` on macOS; see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ### Regenerating the icon
 
