@@ -20,3 +20,47 @@ public protocol PhotoImporting {
     /// Imports the file (the importer may move it) and returns the Photos local identifier.
     func importPhoto(_ request: PhotoImportRequest) async throws -> String
 }
+
+/// Describes the photo to look for in the Photos library.
+///
+/// The ledger of synced photos is local to one Mac, so on a second Mac every photo would look
+/// new. Photos itself is the shared record: iCloud Photos has already put the assets on both
+/// machines, so a photo that is present there has been synced before, whichever Mac did it.
+public struct PhotoMatchQuery: Equatable {
+    /// The original file name the photo would carry in Photos, e.g. `L1009709.jpg`.
+    public let fileName: String
+    /// Capture date of the photo according to Lightroom.
+    public let captureDate: Date
+    /// How far a Photos asset's creation date may differ and still count as the same photo.
+    /// Wide enough to absorb the two Macs reading the same local capture time in different zones.
+    public let dateTolerance: TimeInterval
+    /// Pixel size of the edited photo, when Lightroom reports it. Used to pick between several
+    /// candidates, never to reject the only one (Lightroom Classic photos arrive at 2048 px).
+    public let pixelWidth: Int?
+    public let pixelHeight: Int?
+    /// The configured Photos album, if any. A matched asset missing from it is added to it.
+    public let albumName: String?
+
+    public init(fileName: String, captureDate: Date, dateTolerance: TimeInterval,
+                pixelWidth: Int?, pixelHeight: Int?, albumName: String?) {
+        self.fileName = fileName
+        self.captureDate = captureDate
+        self.dateTolerance = dateTolerance
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.albumName = albumName
+    }
+}
+
+/// Looks for a photo that is already in the Photos library, so it is not imported twice.
+public protocol PhotoLibraryLookup {
+    /// Returns the Photos local identifier of a matching asset, or nil when there is none.
+    func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String?
+}
+
+/// A lookup that never finds anything, for callers that do not have a Photos library.
+public struct NullPhotoLibraryLookup: PhotoLibraryLookup {
+    public init() {}
+
+    public func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? { nil }
+}

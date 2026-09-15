@@ -210,4 +210,15 @@ public struct LightroomPhoto: Equatable, Identifiable {
         guard let width = croppedWidth, let height = croppedHeight else { return nil }
         return max(width, height)
     }
+
+    /// The file name this photo carries once imported, which is what Photos stores as the
+    /// asset's original file name. Lightroom always serves a JPEG, named after the original
+    /// with a `.jpg` extension: `DSC_3920.NEF` is downloaded as `DSC_3920.jpg`.
+    public var expectedPhotosFileName: String? {
+        guard let fileName, !fileName.isEmpty else { return nil }
+        guard let dot = fileName.lastIndex(of: "."), dot != fileName.startIndex else {
+            return fileName + ".jpg"
+        }
+        return fileName[..<dot] + ".jpg"
+    }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ShareLinkError: Error, LocalizedError, Equatable {
+public enum AlbumShareLinkError: Error, LocalizedError, Equatable {
     case empty
     case unrecognized(String)
 
@@ -15,7 +15,7 @@ public enum ShareLinkError: Error, LocalizedError, Equatable {
 }
 
 /// A Lightroom album share link as pasted by the user.
-public struct ShareLink: Equatable {
+public struct AlbumShareLink: Equatable {
     public enum Kind: Equatable {
         /// A resolved `lightroom.adobe.com/shares/{shareID}` link, optionally pointing at one album.
         case share(shareID: String, albumID: String?)
@@ -31,24 +31,24 @@ public struct ShareLink: Equatable {
         self.original = original
     }
 
-    public static func parse(_ text: String) throws -> ShareLink {
+    public static func parse(_ text: String) throws -> AlbumShareLink {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw ShareLinkError.empty }
+        guard !trimmed.isEmpty else { throw AlbumShareLinkError.empty }
 
         if isHexID(trimmed) {
-            return ShareLink(kind: .share(shareID: trimmed.lowercased(), albumID: nil), original: text)
+            return AlbumShareLink(kind: .share(shareID: trimmed.lowercased(), albumID: nil), original: text)
         }
 
         var candidate = trimmed
         if !candidate.contains("://") { candidate = "https://" + candidate }
         guard let url = URL(string: candidate), let host = url.host?.lowercased() else {
-            throw ShareLinkError.unrecognized(trimmed)
+            throw AlbumShareLinkError.unrecognized(trimmed)
         }
         let parts = url.pathComponents.filter { $0 != "/" }
 
         if host == "adobe.ly" || host == "www.adobe.ly" {
-            guard let slug = parts.first, !slug.isEmpty else { throw ShareLinkError.unrecognized(trimmed) }
-            return ShareLink(kind: .shortLink(url), original: text)
+            guard let slug = parts.first, !slug.isEmpty else { throw AlbumShareLinkError.unrecognized(trimmed) }
+            return AlbumShareLink(kind: .shortLink(url), original: text)
         }
 
         if host == "lightroom.adobe.com" || host == "www.lightroom.adobe.com" {
@@ -57,11 +57,11 @@ public struct ShareLink: Equatable {
                 if let albumIndex = parts.firstIndex(of: "albums"), albumIndex + 1 < parts.count, isHexID(parts[albumIndex + 1]) {
                     albumID = parts[albumIndex + 1].lowercased()
                 }
-                return ShareLink(kind: .share(shareID: parts[index + 1].lowercased(), albumID: albumID), original: text)
+                return AlbumShareLink(kind: .share(shareID: parts[index + 1].lowercased(), albumID: albumID), original: text)
             }
         }
 
-        throw ShareLinkError.unrecognized(trimmed)
+        throw AlbumShareLinkError.unrecognized(trimmed)
     }
 
     static func isHexID(_ text: String) -> Bool {

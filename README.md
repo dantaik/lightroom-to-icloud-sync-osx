@@ -8,7 +8,8 @@ No Adobe developer account, no Lightroom Classic, no Adobe API key. It uses the 
 
 ## Requirements
 
-- macOS 13 Ventura or later, Xcode 15+ command line tools (`xcode-select --install`) to build.
+- macOS 13 Ventura or later. The Command Line Tools (`xcode-select --install`) are enough to build
+  and run the app; the test suite additionally needs full Xcode, because XCTest ships only there.
 - Photos with **iCloud Photos** turned on for the System Photo Library (Photos › Settings › iCloud).
 - A Lightroom album shared by link with **Allow downloads** enabled.
 
@@ -28,8 +29,36 @@ That's it. The app checks the album on that interval and on every launch.
 - A photo edited within the last two minutes waits for the next check, so an edit in progress is not captured half done.
 - Once synced, a photo is recorded in a local ledger and is **never synced again**, however often it is edited later. Removing it from the Lightroom album or from Photos does not resync it either.
 - If the same original (same file hash) appears twice in the album, it is imported once.
+- Before downloading anything, the app asks Photos whether the photo is already there. See
+  [Using two Macs](#using-two-macs).
 - **Sync now** in the panel checks immediately and ignores both delays.
 - Videos are listed but skipped. Only photos are synced.
+
+### Using two Macs
+
+The ledger of synced photos is a local file, so a second Mac starts out knowing nothing. To keep it
+from importing the whole album again, the app checks the Photos library itself before downloading
+anything: iCloud Photos has already put the assets on both machines, so a photo that is present
+there has been synced before, whichever Mac did it.
+
+A photo counts as already present when an asset in the library has the **same original file name**
+and a **creation date within a day** of Lightroom's capture date. Lightroom always serves a JPEG
+named after the original, so `L1009709.DNG` is looked up as `L1009709.jpg`. Both must match, which
+makes a false match implausible: the same camera file name within a day of the same capture time is
+the same photograph. The day of slack absorbs the two Macs reading Lightroom's zone-less capture
+time in different time zones. When several assets match by name, the one whose pixel size also
+matches wins. If you configured a Photos album and the matched photo is not in it, it is added.
+
+Two things this does not cover:
+
+- Let Photos finish syncing from iCloud on the second Mac before starting the app. Photos it has not
+  received yet cannot be found, and would be imported again.
+- Run the app on one Mac at a time. Two Macs checking the same album within the same minute can
+  both import the same photo before either one appears in the other's library.
+
+A photo without a capture date is not looked up at all, since the search would have to scan the
+whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the
+app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives.
 
 ### Build
 
@@ -45,7 +74,10 @@ The first time a photo is imported macOS asks for permission to access Photos. I
 
 The build is signed ad hoc, which is fine for an app you built yourself. Rebuilding changes the signature, so macOS may ask for Photos permission again after a rebuild. To avoid that, sign with your own certificate: `CODESIGN_IDENTITY="Apple Development: …" make app`.
 
-`make test` runs the unit tests of the core library. They also run on Linux, which is how the sync logic was developed and verified.
+`make test` runs the unit tests of the core library. On macOS they need full Xcode; if `swift test`
+reports `no such module 'XCTest'`, point the toolchain at Xcode once with
+`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`. The same tests also run on Linux,
+which is how the sync logic was developed and verified.
 
 ### Diagnostics
 
@@ -74,7 +106,7 @@ GET https://dl.lightroom.adobe.com/spaces/{shareID}/assets/{assetID}       full-
 
 The last call is exactly what the gallery's *Download* button does. For photos whose originals live in Lightroom's cloud it returns a JPEG at the edited photo's full pixel size, with EXIF, XMP and the ICC profile embedded. Photos that only reached the cloud as smart previews (synced from Lightroom Classic) come back at 2048 px; the app imports them anyway and logs a warning.
 
-On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest`), sets the capture date, adds it to the chosen album, and records the Photos identifier in the ledger.
+On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest`), sets the capture date, adds it to the chosen album, and records the Photos identifier in the ledger. Before importing, it looks for an existing asset with `PHAsset.fetchAssets` narrowed by creation date, comparing each candidate's original file name from `PHAssetResource`.
 
 ## Caveats
 

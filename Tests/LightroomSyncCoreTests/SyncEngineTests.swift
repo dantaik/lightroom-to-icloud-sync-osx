@@ -10,6 +10,7 @@ final class SyncEngineTests: XCTestCase {
     private struct Harness {
         let transport: FakeTransport
         let importer: FakeImporter
+        let photoLibrary: FakePhotoLibrary
         let sink: RecordingSink
         let ledger: Ledger
         let engine: SyncEngine
@@ -22,11 +23,14 @@ final class SyncEngineTests: XCTestCase {
         transport.setJSON(api, #"{"id": "\#(share)", "type": "space", "createdOnClient": "AdobeNimbus-test", "payload": {"download": \#(downloadsAllowed), "private": false}}"#)
         transport.setJSON("\(api)/resources", #"{"base": "x", "resources": [{"id": "\#(album)", "type": "album", "subtype": "collection", "payload": {"name": "Test album"}, "links": {"self": {"href": "spaces/\#(share)/albums/\#(album)"}}}]}"#)
         let importer = FakeImporter()
+        let photoLibrary = FakePhotoLibrary()
         let sink = RecordingSink()
         let ledger = try Ledger(fileURL: directory.appendingPathComponent("ledger.json"))
         let engine = SyncEngine(client: LightroomGalleryClient(transport: transport), ledger: ledger, importer: importer,
+                                photoLibrary: photoLibrary,
                                 downloadDirectory: directory.appendingPathComponent("downloads"), settleTime: 120, sink: sink)
-        return Harness(transport: transport, importer: importer, sink: sink, ledger: ledger, engine: engine, directory: directory)
+        return Harness(transport: transport, importer: importer, photoLibrary: photoLibrary, sink: sink,
+                       ledger: ledger, engine: engine, directory: directory)
     }
 
     private func config(ignoreDelays: Bool = false, albumName: String? = "Lightroom") -> SyncConfiguration {
@@ -161,5 +165,112 @@ final class SyncEngineTests: XCTestCase {
         } catch let error as SyncEngineError {
             XCTAssertEqual(error, .albumNotFound("cccccccccccccccccccccccccccccccc"))
         }
+    }
+}
+
+// MARK: - The Photos check (what keeps a second Mac from importing everything again)
+
+extension SyncEngineTests {
+    func testPhotosAlreadyInTheLibraryAreRecordedWithoutDownloading() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "known", fileName: "L1000133.DNG", sha: "sha-known", added: old, edited: old),
+            assetEntry(id: "fresh", fileName: "L1000134.DNG", sha: "sha-fresh", added: old, edited: old),
+        ]))
+        // Lightroom serves a JPEG, so Photos holds "L1000133.jpg" even though the original is a DNG.
+        harness.photoLibrary.identifiers["L1000133.jpg"] = "existing-local-id"
+        setDownload(harness, assetID: "fresh", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.foundInPhotos, 1)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.failed, 0)
+
+        // The known photo was neither downloaded nor imported, but it is recorded as synced.
+        XCTAssertEqual(harness.importer.requests.map(\.originalFileName), ["fresh.jpg"])
+        XCTAssertFalse(harness.transport.requests.contains { $0.absoluteString.hasSuffix("assets/known") })
+        XCTAssertEqual(harness.ledger.state.entries["known"]?.photosLocalIdentifier, "existing-local-id")
+        XCTAssertEqual(harness.ledger.state.entries["known"]?.fileName, "L1000133.jpg")
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("already in Photos") })
+
+        // A second pass takes it from the ledger and asks Photos nothing more.
+        harness.photoLibrary.queries.removeAll()
+        let second = try await harness.engine.run(config())
+        XCTAssertEqual(second.alreadySynced, 2)
+        XCTAssertEqual(second.foundInPhotos, 0)
+        XCTAssertTrue(harness.photoLibrary.queries.isEmpty)
+    }
+
+    func testPhotosQueryCarriesNameDateSizeAndAlbum() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_3920.NEF", added: old, edited: old, cropped: (6016, 4016)),
+        ]))
+        setDownload(harness, assetID: "p1", width: 6016, height: 4016)
+
+        _ = try await harness.engine.run(config(albumName: "Lightroom"))
+        XCTAssertEqual(harness.photoLibrary.queries.count, 1)
+        let query = try XCTUnwrap(harness.photoLibrary.queries.first)
+        XCTAssertEqual(query.fileName, "DSC_3920.jpg")
+        XCTAssertEqual(query.captureDate, AdobeDate.parse("2024-05-01T10:20:30"))
+        XCTAssertEqual(query.pixelWidth, 6016)
+        XCTAssertEqual(query.pixelHeight, 4016)
+        XCTAssertEqual(query.albumName, "Lightroom")
+        XCTAssertEqual(query.dateTolerance, SyncEngine.captureDateTolerance)
+        XCTAssertGreaterThan(query.dateTolerance, 24 * 3600, "a time zone difference must not break the match")
+    }
+
+    func testPhotosCheckRunsBeforeTheWaitingRules() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        // Just added, so the waiting rules would normally hold it back.
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "recent", fileName: "a.jpg", added: now.addingTimeInterval(-30)),
+        ]))
+        harness.photoLibrary.identifiers["a.jpg"] = "existing-local-id"
+
+        let report = try await harness.engine.run(config(), now: now)
+        XCTAssertEqual(report.foundInPhotos, 1)
+        XCTAssertEqual(report.pending, 0)
+        XCTAssertTrue(harness.ledger.contains(assetID: "recent"))
+    }
+
+    func testFailingPhotosCheckFallsBackToSyncing() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "a.jpg", added: old, edited: old),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+        harness.photoLibrary.error = NSError(domain: "Photos", code: 1, userInfo: [NSLocalizedDescriptionKey: "no access"])
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.synced, 1, "a duplicate is better than a photo that never syncs")
+        XCTAssertEqual(report.foundInPhotos, 0)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("Could not check Photos") })
+    }
+
+    func testPhotoWithoutACaptureDateIsNotLookedUp() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        var entry = assetEntry(id: "p1", fileName: "a.jpg", added: old, edited: old)
+        var payload = entry["asset"] as! [String: Any]
+        var assetPayload = payload["payload"] as! [String: Any]
+        assetPayload["captureDate"] = "0000-00-00T00:00:00"
+        payload["payload"] = assetPayload
+        entry["asset"] = payload
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [entry]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config())
+        XCTAssertTrue(harness.photoLibrary.queries.isEmpty, "without a date the query would scan the whole library")
+        XCTAssertEqual(report.synced, 1)
     }
 }

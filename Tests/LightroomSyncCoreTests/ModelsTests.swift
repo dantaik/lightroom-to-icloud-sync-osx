@@ -43,6 +43,23 @@ final class ModelsTests: XCTestCase {
         XCTAssertNotNil(first.captureDate)
     }
 
+    func testExpectedPhotosFileNameIsTheOriginalNameAsJPEG() {
+        func photo(named fileName: String?) -> LightroomPhoto {
+            LightroomPhoto(assetID: "a", subtype: "image", fileName: fileName, originalSHA256: nil,
+                           originalWidth: nil, originalHeight: nil, croppedWidth: nil, croppedHeight: nil,
+                           captureDate: nil, addedToAlbumAt: nil, lastEditedAt: nil, hasEdits: false)
+        }
+        XCTAssertEqual(photo(named: "DSC_3920.NEF").expectedPhotosFileName, "DSC_3920.jpg")
+        XCTAssertEqual(photo(named: "L1000133.DNG").expectedPhotosFileName, "L1000133.jpg")
+        XCTAssertEqual(photo(named: "I - Jan.JPG").expectedPhotosFileName, "I - Jan.jpg")
+        XCTAssertEqual(photo(named: "IMG_6804.PNG").expectedPhotosFileName, "IMG_6804.jpg")
+        XCTAssertEqual(photo(named: "holiday.2024.raw.dng").expectedPhotosFileName, "holiday.2024.raw.jpg")
+        XCTAssertEqual(photo(named: "no-extension").expectedPhotosFileName, "no-extension.jpg")
+        XCTAssertEqual(photo(named: ".hidden").expectedPhotosFileName, ".hidden.jpg")
+        XCTAssertNil(photo(named: nil).expectedPhotosFileName)
+        XCTAssertNil(photo(named: "").expectedPhotosFileName)
+    }
+
     func testLinkMapIgnoresNonLinkValues() throws {
         let json = #"{"self": {"href": "a"}, "/rels/comments": {"href": "c", "count": 0}, "weird": 5, "other": {"nope": 1}}"#
         let links = try JSONDecoder().decode(LinkMap.self, from: Data(json.utf8))

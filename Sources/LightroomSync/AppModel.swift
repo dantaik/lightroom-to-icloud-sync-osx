@@ -117,7 +117,8 @@ final class AppModel: ObservableObject {
         do {
             let ledger = try Ledger(fileURL: support.appendingPathComponent("ledger.json"))
             self.ledger = ledger
-            engine = SyncEngine(client: client, ledger: ledger, importer: PhotoKitImporter(),
+            let photoKit = PhotoKitImporter()
+            engine = SyncEngine(client: client, ledger: ledger, importer: photoKit, photoLibrary: photoKit,
                                 downloadDirectory: support.appendingPathComponent("downloads", isDirectory: true),
                                 sink: bridge)
             syncedCount = ledger.syncedCount
@@ -233,9 +234,9 @@ final class AppModel: ObservableObject {
             shareStatusIsError = false
             return
         }
-        let parsed: ShareLink
+        let parsed: AlbumShareLink
         do {
-            parsed = try ShareLink.parse(trimmed)
+            parsed = try AlbumShareLink.parse(trimmed)
         } catch {
             shareInfo = nil
             shareStatus = error.localizedDescription
@@ -309,7 +310,9 @@ final class AppModel: ObservableObject {
             lastSyncAt = Date()
             syncedCount = ledger?.syncedCount ?? syncedCount
             phase = .idle
-            bridge.log(.info, "Check finished: \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed")
+            var summary = "Check finished: \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed"
+            if report.foundInPhotos > 0 { summary += ", \(report.foundInPhotos) already in Photos" }
+            bridge.log(.info, summary)
         } catch is CancellationError {
             phase = .idle
         } catch {

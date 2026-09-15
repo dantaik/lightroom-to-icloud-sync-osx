@@ -77,14 +77,14 @@ public final class LightroomGalleryClient {
     }
 
     /// Turns a pasted link into a share ID (following `adobe.ly` redirects when needed).
-    public func resolve(_ link: ShareLink) async throws -> (shareID: String, albumID: String?) {
+    public func resolve(_ link: AlbumShareLink) async throws -> (shareID: String, albumID: String?) {
         switch link.kind {
         case .share(let shareID, let albumID):
             return (shareID, albumID)
         case .shortLink(let url):
             let response = try await transport.get(url, headers: ["User-Agent": userAgent])
             guard let finalURL = response.finalURL,
-                  let resolved = try? ShareLink.parse(finalURL.absoluteString),
+                  let resolved = try? AlbumShareLink.parse(finalURL.absoluteString),
                   case .share(let shareID, let albumID) = resolved.kind
             else { throw LightroomError.shortLinkUnresolved(url) }
             return (shareID, albumID)

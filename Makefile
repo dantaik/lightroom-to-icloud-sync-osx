@@ -16,9 +16,9 @@ install: app
 	cp -R $(APP) /Applications/LightroomSync.app
 	@echo "Installed /Applications/LightroomSync.app"
 
-## Run the core library tests (works on macOS and Linux)
+## Run the core library tests (needs Xcode on macOS; works as is on Linux)
 test:
-	swift test
+	scripts/run-tests.sh
 
 clean:
 	rm -rf .build dist

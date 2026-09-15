@@ -79,6 +79,19 @@ final class FakeImporter: PhotoImporting {
     }
 }
 
+final class FakePhotoLibrary: PhotoLibraryLookup {
+    /// Local identifiers keyed by the file name the library is asked about.
+    var identifiers: [String: String] = [:]
+    var queries: [PhotoMatchQuery] = []
+    var error: Error?
+
+    func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? {
+        queries.append(query)
+        if let error { throw error }
+        return identifiers[query.fileName]
+    }
+}
+
 final class RecordingSink: SyncEventSink {
     var lines: [String] = []
     var progress: [(Int, Int)] = []

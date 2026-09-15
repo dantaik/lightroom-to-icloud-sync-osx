@@ -9,7 +9,7 @@ final class GalleryClientTests: XCTestCase {
         let transport = FakeTransport()
         transport.set("https://adobe.ly/abc", finalURL: URL(string: "https://lightroom.adobe.com/shares/\(share)")!)
         let client = LightroomGalleryClient(transport: transport)
-        let resolved = try await client.resolve(try ShareLink.parse("https://adobe.ly/abc"))
+        let resolved = try await client.resolve(try AlbumShareLink.parse("https://adobe.ly/abc"))
         XCTAssertEqual(resolved.shareID, share)
         XCTAssertNil(resolved.albumID)
         XCTAssertEqual(transport.lastHeaders["User-Agent"], LightroomGalleryClient.defaultUserAgent)
