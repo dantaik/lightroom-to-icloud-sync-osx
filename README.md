@@ -84,7 +84,7 @@ python3 scripts/make-icon.py
 1. **Share the album from Lightroom.** Open the album in Lightroom (desktop, web or mobile), choose *Share & Invite*, set *Link access* to **Anyone can view**, and under *Link settings* turn on **Allow downloads**. Copy the link; it looks like `https://adobe.ly/…` or `https://lightroom.adobe.com/shares/…`.
 2. Click the menu bar icon and paste the link into *Lightroom album share link*.
 3. Optionally name a **Photos album**. The app creates it if it does not exist. Leave it empty to add photos to the library only.
-4. Set **Check every N min**, and turn on **Start at login** if you want it running all the time.
+4. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
 5. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
 
 The **About** button in the app summarises the same behaviour and limits described below.
@@ -103,7 +103,7 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 
 ## How syncing behaves
 
-- A photo becomes eligible once it has been in the shared album for at least the check interval. That gives you the interval to finish your first edits before the version is captured.
+- A photo becomes eligible once it has been in the shared album for at least the check interval. That gives you the interval to finish your first edits before the version is captured, so a longer interval is also a longer grace period.
 - A photo edited within the last two minutes waits for the next check, so an edit in progress is not captured half done.
 - Once synced, a photo is recorded in a local ledger and is **never synced again**, however often it is edited later. Removing it from the Lightroom album or from Photos does not resync it.
 - If the same original (same file hash) appears twice in the album, it is imported once.
@@ -178,7 +178,7 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 - **Sharing by link means anyone with the link can view and download the album.** The link is unguessable, but treat it as a secret. Invite-only shares cannot be read without an Adobe login.
 - Photos synced to Adobe's cloud from Lightroom Classic exist there only as smart previews, so they arrive at 2048 px on the long edge.
 - You get a rendered JPEG, not the RAW original. Videos and Live Photos are skipped.
-- The app polls with one small JSON request per interval, and only contacts the download host for new photos. Keep the interval reasonable; the default is 15 minutes.
+- The app polls with one small JSON request per interval, and only contacts the download host for new photos. The default is every 15 minutes; the control accepts up to 240 minutes, 48 hours or 30 days.
 - Not affiliated with, or endorsed by, Adobe or Apple.
 
 ## Project layout

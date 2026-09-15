@@ -1,5 +1,43 @@
 import Foundation
 
+/// The unit the check interval is expressed in.
+public enum IntervalUnit: String, Codable, CaseIterable, Equatable, Identifiable {
+    case minutes
+    case hours
+    case days
+
+    public var id: String { rawValue }
+
+    public var seconds: TimeInterval {
+        switch self {
+        case .minutes: return 60
+        case .hours: return 3600
+        case .days: return 86_400
+        }
+    }
+
+    /// What a sensible number of this unit looks like. A day is already a long time to hold a
+    /// photo back, so the top of each range is generous rather than unlimited.
+    public var range: ClosedRange<Int> {
+        switch self {
+        case .minutes: return 1...240
+        case .hours: return 1...48
+        case .days: return 1...30
+        }
+    }
+
+    public var pluralName: String { rawValue }
+
+    public func name(for value: Int) -> String {
+        guard value == 1 else { return pluralName }
+        return String(pluralName.dropLast())
+    }
+
+    public func clamp(_ value: Int) -> Int {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+}
+
 /// The settings a sync pass runs on.
 ///
 /// The panel edits a draft of this; only the copy the user has saved drives the background loop,
@@ -10,19 +48,24 @@ public struct SyncSettings: Equatable, Codable {
     public var albumID: String?
     /// Photos album to file synced photos into. Empty means the library only.
     public var photosAlbumName: String
-    public var intervalMinutes: Int
+    /// How often to check, as a number of `intervalUnit`.
+    public var intervalValue: Int
+    public var intervalUnit: IntervalUnit
 
-    public static let defaultIntervalMinutes = 15
-    public static let intervalRange = 1...1440
+    public static let defaultIntervalValue = 15
+    public static let defaultIntervalUnit = IntervalUnit.minutes
 
     public static let empty = SyncSettings(shareLink: "", albumID: nil, photosAlbumName: "",
-                                           intervalMinutes: defaultIntervalMinutes)
+                                           intervalValue: defaultIntervalValue,
+                                           intervalUnit: defaultIntervalUnit)
 
-    public init(shareLink: String, albumID: String?, photosAlbumName: String, intervalMinutes: Int) {
+    public init(shareLink: String, albumID: String?, photosAlbumName: String,
+                intervalValue: Int, intervalUnit: IntervalUnit) {
         self.shareLink = shareLink
         self.albumID = albumID
         self.photosAlbumName = photosAlbumName
-        self.intervalMinutes = intervalMinutes
+        self.intervalValue = intervalValue
+        self.intervalUnit = intervalUnit
     }
 
     /// The form that gets stored and used: trimmed, clamped, with empty text as nil.
@@ -33,7 +76,8 @@ public struct SyncSettings: Equatable, Codable {
             shareLink: shareLink.trimmingCharacters(in: .whitespacesAndNewlines),
             albumID: albumID.flatMap { $0.isEmpty ? nil : $0 },
             photosAlbumName: photosAlbumName.trimmingCharacters(in: .whitespacesAndNewlines),
-            intervalMinutes: min(max(intervalMinutes, Self.intervalRange.lowerBound), Self.intervalRange.upperBound)
+            intervalValue: intervalUnit.clamp(intervalValue),
+            intervalUnit: intervalUnit
         )
     }
 
@@ -43,7 +87,27 @@ public struct SyncSettings: Equatable, Codable {
     }
 
     public var checkInterval: TimeInterval {
-        TimeInterval(normalized.intervalMinutes * 60)
+        let settings = normalized
+        return TimeInterval(settings.intervalValue) * settings.intervalUnit.seconds
+    }
+
+    /// "15 minutes", "2 hours", "1 day" — for the log and the status text.
+    public var intervalDescription: String {
+        let settings = normalized
+        return "\(settings.intervalValue) \(settings.intervalUnit.name(for: settings.intervalValue))"
+    }
+
+    /// Reads an interval stored as plain minutes, which is how the first version saved it, and
+    /// picks the largest unit that expresses it exactly: 1440 becomes a day, not 1440 minutes.
+    public static func interval(fromMinutes minutes: Int) -> (value: Int, unit: IntervalUnit) {
+        guard minutes > 0 else { return (defaultIntervalValue, defaultIntervalUnit) }
+        if minutes % (24 * 60) == 0, IntervalUnit.days.range.contains(minutes / (24 * 60)) {
+            return (minutes / (24 * 60), .days)
+        }
+        if minutes % 60 == 0, IntervalUnit.hours.range.contains(minutes / 60) {
+            return (minutes / 60, .hours)
+        }
+        return (IntervalUnit.minutes.clamp(minutes), .minutes)
     }
 
     public func syncConfiguration(ignoreDelays: Bool) -> SyncConfiguration {
@@ -83,6 +147,12 @@ public struct SyncSettingsEditor: Equatable {
     public var isReadyToSync: Bool {
         guard let saved, saved.isConfigured else { return false }
         return !hasUnsavedChanges
+    }
+
+    /// Switches the unit, keeping the number inside what the new unit allows.
+    public mutating func setIntervalUnit(_ unit: IntervalUnit) {
+        draft.intervalValue = unit.clamp(draft.intervalValue)
+        draft.intervalUnit = unit
     }
 
     /// Commits the draft. Returns the settings that were saved, so the caller can store them.

@@ -176,14 +176,31 @@ struct MenuPanel: View {
         VStack(alignment: .leading, spacing: Metrics.withinSection) {
             sectionHeader("Schedule")
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text("Check every")
+
                 Spacer(minLength: 0)
-                Text("\(model.editor.draft.intervalMinutes) min")
+
+                TextField("", value: $model.editor.draft.intervalValue, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
                     .font(.body.monospacedDigit())
-                    .foregroundStyle(Color.secondary)
-                Stepper("", value: $model.editor.draft.intervalMinutes, in: SyncSettings.intervalRange)
+                    .frame(width: 54)
+
+                Stepper("", value: $model.editor.draft.intervalValue,
+                        in: model.editor.draft.intervalUnit.range)
                     .labelsHidden()
+
+                Picker("", selection: Binding(
+                    get: { model.editor.draft.intervalUnit },
+                    set: { model.setIntervalUnit($0) }
+                )) {
+                    ForEach(IntervalUnit.allCases) { unit in
+                        Text(unit.pluralName).tag(unit)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 96)
             }
 
             caption("A new photo syncs once it has been in the album this long, which leaves time for your first edits.")

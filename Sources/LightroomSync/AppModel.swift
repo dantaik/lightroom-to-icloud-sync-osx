@@ -29,7 +29,9 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
         static let shareLink = "shareLink"
         static let albumID = "selectedAlbumID"
         static let photosAlbum = "photosAlbumName"
-        static let interval = "intervalMinutes"
+        static let intervalValue = "intervalValue"
+        static let intervalUnit = "intervalUnit"
+        static let legacyIntervalMinutes = "intervalMinutes"
     }
 
     let defaults: UserDefaults
@@ -37,20 +39,33 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
     func load() -> SyncSettings? {
         // No share link key at all means the user has never saved anything.
         guard let shareLink = defaults.string(forKey: Keys.shareLink) else { return nil }
-        let interval = defaults.integer(forKey: Keys.interval)
+        let interval = loadInterval()
         return SyncSettings(
             shareLink: shareLink,
             albumID: defaults.string(forKey: Keys.albumID),
             photosAlbumName: defaults.string(forKey: Keys.photosAlbum) ?? "",
-            intervalMinutes: interval > 0 ? interval : SyncSettings.defaultIntervalMinutes
+            intervalValue: interval.value,
+            intervalUnit: interval.unit
         ).normalized
+    }
+
+    /// Reads the interval, falling back to the plain minutes the first version stored.
+    private func loadInterval() -> (value: Int, unit: IntervalUnit) {
+        let value = defaults.integer(forKey: Keys.intervalValue)
+        if value > 0, let raw = defaults.string(forKey: Keys.intervalUnit),
+           let unit = IntervalUnit(rawValue: raw) {
+            return (value, unit)
+        }
+        return SyncSettings.interval(fromMinutes: defaults.integer(forKey: Keys.legacyIntervalMinutes))
     }
 
     func save(_ settings: SyncSettings) {
         defaults.set(settings.shareLink, forKey: Keys.shareLink)
         defaults.set(settings.albumID, forKey: Keys.albumID)
         defaults.set(settings.photosAlbumName, forKey: Keys.photosAlbum)
-        defaults.set(settings.intervalMinutes, forKey: Keys.interval)
+        defaults.set(settings.intervalValue, forKey: Keys.intervalValue)
+        defaults.set(settings.intervalUnit.rawValue, forKey: Keys.intervalUnit)
+        defaults.removeObject(forKey: Keys.legacyIntervalMinutes)
     }
 }
 
@@ -230,9 +245,13 @@ final class AppModel: ObservableObject {
         lastAttemptAt = nil
         phase = .idle
         let description = settings.isConfigured ? "saved" : "cleared"
-        bridge.log(.info, "Settings \(description): every \(settings.intervalMinutes) min"
+        bridge.log(.info, "Settings \(description): every \(settings.intervalDescription)"
             + (settings.photosAlbumName.isEmpty ? ", no Photos album" : ", Photos album “\(settings.photosAlbumName)”"))
         validateSavedLink()
+    }
+
+    func setIntervalUnit(_ unit: IntervalUnit) {
+        editor.setIntervalUnit(unit)
     }
 
     func revert() {
