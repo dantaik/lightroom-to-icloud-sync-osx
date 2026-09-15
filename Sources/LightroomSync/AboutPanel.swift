@@ -61,6 +61,7 @@ struct AboutView: View {
         "A photo is synced once and then never again, however often you edit it afterwards. The record lives in a ledger file on this Mac.",
         "Photos your library already holds are recognised and skipped, so a second Mac does not import the album a second time.",
         "The Photos album you name is kept filled: it is recreated if you delete it, and renaming it here moves the synced photos across.",
+        "While a check is running the Mac is kept awake so the pass can finish, and is free to sleep again the moment it is over. The screen still sleeps when it normally would.",
         "Nothing runs until you press Save, and checks always use the saved settings, never what you are still typing.",
     ]
 
@@ -71,6 +72,7 @@ struct AboutView: View {
         "You get a rendered JPEG, not the RAW original. Videos and Live Photos are skipped.",
         "Edits you make after a photo has synced are not sent again, by design. Deleting the photo from Photos does not bring it back either.",
         "Use one Mac at a time, and let Photos finish syncing from iCloud before starting the app on a second one.",
+        "It cannot check the album while the Mac is asleep, and it does not wake it to do so. A check that came due meanwhile runs shortly after you wake it. On battery, macOS may sleep even during a check.",
         "Not affiliated with, or endorsed by, Adobe or Apple.",
     ]
 
