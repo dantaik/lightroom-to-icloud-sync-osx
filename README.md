@@ -120,7 +120,9 @@ swift run lrsync-check "https://adobe.ly/xxxxxxx"
 swift run lrsync-check "https://adobe.ly/xxxxxxx" ~/Desktop/lightroom-test
 ```
 
-The app also writes a log to `~/Library/Logs/LightroomSync/sync.log` (*Open log* in the panel). The ledger of synced photos lives in `~/Library/Application Support/LightroomSync/ledger.json`; delete it to make the app treat every photo as new.
+The panel itself stays short: a status line for what the app is doing and what the last check did,
+the settings, and the actions. Everything each check did, photo by photo, goes to
+`~/Library/Logs/LightroomSync/sync.log`, which *Open log* opens. The ledger of synced photos lives in `~/Library/Application Support/LightroomSync/ledger.json`; delete it to make the app treat every photo as new.
 
 ## How it works
 

@@ -14,10 +14,7 @@ private final class EventBridge: SyncEventSink {
     }
 
     func log(_ level: LogLevel, _ message: String) {
-        let line = level == .info ? message : "[\(level.rawValue)] \(message)"
-        fileLog.append(line)
-        let model = self.model
-        Task { @MainActor in model?.appendActivity(line) }
+        fileLog.append(level == .info ? message : "[\(level.rawValue)] \(message)")
     }
 
     func progress(completed: Int, total: Int) {
@@ -65,6 +62,23 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
+    /// What the panel shows next to the share link field.
+    enum LinkStatus: Equatable {
+        case unknown
+        case checking
+        case ok
+        case problem
+    }
+
+    /// Drives the one indicator in the header.
+    enum StatusKind: Equatable {
+        case unconfigured
+        case unsaved
+        case syncing
+        case failed
+        case ok
+    }
+
     /// The settings being edited. Only `editor.saved` drives syncing.
     @Published var editor: SyncSettingsEditor
     @Published private(set) var launchAtLogin = false
@@ -73,12 +87,11 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var shareInfo: ShareInfo?
     @Published private(set) var shareStatus = ""
-    @Published private(set) var shareStatusIsError = false
+    @Published private(set) var linkStatus: LinkStatus = .unknown
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastSyncAt: Date?
     @Published private(set) var lastReport: SyncReport?
     @Published private(set) var syncedCount = 0
-    @Published private(set) var activity: [String] = []
     @Published private(set) var setupError: String?
 
     let logFileURL: URL
@@ -156,27 +169,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var statusKind: StatusKind {
+        if setupError != nil { return .failed }
+        switch phase {
+        case .syncing: return .syncing
+        case .failed: return .failed
+        case .idle:
+            if !hasSavedSettings { return .unconfigured }
+            if hasUnsavedChanges { return .unsaved }
+            if let report = lastReport, report.failed > 0 { return .failed }
+            return .ok
+        }
+    }
+
     var statusLine: String {
         if let setupError { return setupError }
         switch phase {
         case .syncing(let completed, let total):
-            return total > 0 ? "Syncing \(completed) of \(total)…" : "Checking album…"
+            return total > 0 ? "Syncing \(completed) of \(total)…" : "Checking the album…"
         case .failed(let message):
             return "Last check failed: \(message)"
         case .idle:
             guard hasSavedSettings else { return "Not set up yet. Paste the share link and press Save." }
-            var parts: [String] = []
-            if let lastSyncAt {
-                parts.append("Last check \(Self.timeFormatter.string(from: lastSyncAt))")
-            } else {
-                parts.append("No check yet")
+            guard let lastSyncAt else { return "Waiting for the first check" }
+            var line = "Last check \(Self.timeFormatter.string(from: lastSyncAt))"
+            if let report = lastReport {
+                var details = ["\(report.synced) new"]
+                if report.pending > 0 { details.append("\(report.pending) waiting") }
+                if report.foundInPhotos > 0 { details.append("\(report.foundInPhotos) already in Photos") }
+                if report.refiled > 0 { details.append("\(report.refiled) put back in the album") }
+                if report.failed > 0 { details.append("\(report.failed) failed") }
+                line += " · " + details.joined(separator: ", ")
             }
-            if let report = lastReport, report.pending > 0 {
-                parts.append("\(report.pending) waiting")
-            }
-            parts.append("\(syncedCount) synced in total")
-            return parts.joined(separator: " · ")
+            return line
         }
+    }
+
+    /// The running total, shown under the status line once anything has been synced.
+    var totalSyncedLine: String? {
+        guard syncedCount > 0 else { return nil }
+        return syncedCount == 1 ? "1 photo synced in total" : "\(syncedCount) photos synced in total"
+    }
+
+    var saveStateText: String {
+        if hasUnsavedChanges { return "Unsaved changes" }
+        return hasSavedSettings ? "Settings saved" : "Not saved yet"
     }
 
     /// Albums to choose between, once the saved link has been read.
@@ -212,7 +249,7 @@ final class AppModel: ObservableObject {
             try LoginItem.setEnabled(enabled)
             launchAtLogin = LoginItem.isEnabled
         } catch {
-            appendActivity("[error] Could not change login item: \(error.localizedDescription)")
+            bridge.log(.error, "Could not change login item: \(error.localizedDescription)")
             launchAtLogin = LoginItem.isEnabled
         }
     }
@@ -230,11 +267,6 @@ final class AppModel: ObservableObject {
 
     // MARK: Internal updates (called through EventBridge)
 
-    func appendActivity(_ line: String) {
-        activity.append(line)
-        if activity.count > 6 { activity.removeFirst(activity.count - 6) }
-    }
-
     func updateProgress(completed: Int, total: Int) {
         if case .syncing = phase {
             phase = .syncing(completed: completed, total: total)
@@ -249,11 +281,11 @@ final class AppModel: ObservableObject {
         guard let settings = editor.saved, settings.isConfigured else {
             shareInfo = nil
             shareStatus = "Paste the album's share link from Lightroom (Share & Invite › Link), then press Save."
-            shareStatusIsError = false
+            linkStatus = .unknown
             return
         }
         shareStatus = "Reading the album…"
-        shareStatusIsError = false
+        linkStatus = .checking
         validationTask = Task { [weak self] in
             await self?.readShare(settings)
         }
@@ -276,19 +308,19 @@ final class AppModel: ObservableObject {
 
             if info.albums.isEmpty {
                 shareStatus = "This share contains no albums."
-                shareStatusIsError = true
+                linkStatus = .problem
             } else if !info.downloadsAllowed {
-                shareStatus = "Album “\(albumName ?? "?")” found, but downloads are off. Turn on “Allow downloads” in Lightroom's share settings."
-                shareStatusIsError = true
+                shareStatus = "Downloads are off for “\(albumName ?? "?")”. Turn on “Allow downloads” in Lightroom's share settings."
+                linkStatus = .problem
             } else {
-                shareStatus = "Album “\(albumName ?? "?")” · downloads allowed"
-                shareStatusIsError = false
+                shareStatus = "“\(albumName ?? "?")” · downloads allowed"
+                linkStatus = .ok
             }
         } catch {
             guard !Task.isCancelled else { return }
             shareInfo = nil
             shareStatus = error.localizedDescription
-            shareStatusIsError = true
+            linkStatus = .problem
         }
     }
 

@@ -3,138 +3,258 @@ import AppKit
 import LightroomSyncCore
 import SwiftUI
 
-/// The whole UI: a single panel under the menu bar icon.
+/// The whole UI: one panel under the menu bar icon.
+///
+/// Three bands, separated by rules: what the app is doing now, the settings with their Save, and
+/// the actions. The detail of each pass goes to the log file rather than on screen.
 struct MenuPanel: View {
     @EnvironmentObject private var model: AppModel
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            Divider()
-            settings
-            saveBar
-            Divider()
-            activity
-            Divider()
-            footer
-        }
-        .padding(14)
-        .frame(width: 380)
+    private enum Metrics {
+        static let width: CGFloat = 400
+        static let padding: CGFloat = 16
+        static let betweenSections: CGFloat = 18
+        static let withinSection: CGFloat = 6
     }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal, Metrics.padding)
+                .padding(.top, Metrics.padding)
+                .padding(.bottom, 14)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: Metrics.betweenSections) {
+                lightroomSection
+                photosSection
+                scheduleSection
+                saveBar
+            }
+            .padding(Metrics.padding)
+
+            Divider()
+
+            footer
+                .padding(.horizontal, Metrics.padding)
+                .padding(.vertical, 12)
+        }
+        .frame(width: Metrics.width)
+    }
+
+    // MARK: Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: model.menuSymbol)
-                .font(.title2)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 11) {
+            statusIndicator
+                .frame(width: 16, height: 16)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Lightroom → iCloud Photos")
                     .font(.headline)
+
                 Text(model.statusLine)
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
+                    .font(.callout)
+                    .foregroundStyle(statusTextColor)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let total = model.totalSyncedLine {
+                    Text(total)
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                }
+
+                if case .syncing(let completed, let total) = model.phase, total > 0 {
+                    ProgressView(value: Double(completed), total: Double(total))
+                        .progressViewStyle(.linear)
+                        .padding(.top, 3)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var statusIndicator: some View {
+        if model.statusKind == .syncing {
+            ProgressView()
+                .controlSize(.small)
+        } else {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 9, height: 9)
+                .padding(.top, 4)
+        }
+    }
+
+    /// Only a problem colors the status text; a healthy state stays quiet.
+    private var statusTextColor: Color {
+        switch model.statusKind {
+        case .failed: return .red
+        case .unsaved: return .orange
+        default: return .secondary
+        }
+    }
+
+    private var statusColor: Color {
+        switch model.statusKind {
+        case .ok: return .green
+        case .syncing: return .accentColor
+        case .unsaved: return .orange
+        case .failed: return .red
+        case .unconfigured: return .secondary
+        }
+    }
+
+    // MARK: Settings
+
+    private var lightroomSection: some View {
+        VStack(alignment: .leading, spacing: Metrics.withinSection) {
+            sectionHeader("Lightroom album")
+
+            TextField("https://adobe.ly/… or lightroom.adobe.com/shares/…",
+                      text: $model.editor.draft.shareLink)
+                .textFieldStyle(.roundedBorder)
+
+            if !model.shareStatus.isEmpty {
+                Label {
+                    Text(model.shareStatus)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: linkStatusSymbol)
+                }
+                .font(.caption)
+                .foregroundStyle(linkStatusColor)
+            }
+
+            if model.availableAlbums.count > 1 {
+                Picker("Album", selection: $model.editor.draft.albumID) {
+                    Text("First album").tag(nil as String?)
+                    ForEach(model.availableAlbums) { album in
+                        Text(album.name).tag(Optional(album.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.top, 2)
             }
         }
     }
 
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Lightroom album share link")
-                    .font(.caption)
+    private var linkStatusSymbol: String {
+        switch model.linkStatus {
+        case .ok: return "checkmark.circle.fill"
+        case .problem: return "exclamationmark.triangle.fill"
+        case .checking: return "arrow.triangle.2.circlepath"
+        case .unknown: return "info.circle"
+        }
+    }
+
+    private var linkStatusColor: Color {
+        switch model.linkStatus {
+        case .ok: return .green
+        case .problem: return .orange
+        case .checking, .unknown: return .secondary
+        }
+    }
+
+    private var photosSection: some View {
+        VStack(alignment: .leading, spacing: Metrics.withinSection) {
+            sectionHeader("Photos album")
+
+            TextField("Optional — leave empty to add to the library only",
+                      text: $model.editor.draft.photosAlbumName)
+                .textFieldStyle(.roundedBorder)
+
+            caption("Created if it does not exist, and refilled if you delete it.")
+        }
+    }
+
+    private var scheduleSection: some View {
+        VStack(alignment: .leading, spacing: Metrics.withinSection) {
+            sectionHeader("Schedule")
+
+            HStack(spacing: 8) {
+                Text("Check every")
+                Spacer(minLength: 0)
+                Text("\(model.editor.draft.intervalMinutes) min")
+                    .font(.body.monospacedDigit())
                     .foregroundStyle(Color.secondary)
-                TextField("https://adobe.ly/… or https://lightroom.adobe.com/shares/…",
-                          text: $model.editor.draft.shareLink)
-                    .textFieldStyle(.roundedBorder)
-                if !model.shareStatus.isEmpty {
-                    Text(model.shareStatus)
-                        .font(.caption)
-                        .foregroundStyle(model.shareStatusIsError ? Color.red : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if model.availableAlbums.count > 1 {
-                    Picker("Album", selection: $model.editor.draft.albumID) {
-                        Text("First album").tag(nil as String?)
-                        ForEach(model.availableAlbums) { album in
-                            Text(album.name).tag(Optional(album.id))
-                        }
-                    }
-                }
+                Stepper("", value: $model.editor.draft.intervalMinutes, in: SyncSettings.intervalRange)
+                    .labelsHidden()
             }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Photos album (optional)")
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
-                TextField("Leave empty to add photos to the library only",
-                          text: $model.editor.draft.photosAlbumName)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            Stepper(value: $model.editor.draft.intervalMinutes, in: SyncSettings.intervalRange) {
-                Text("Check every \(model.editor.draft.intervalMinutes) min")
-            }
-            Text("New photos sync once they have been in the album for at least this long.")
-                .font(.caption)
-                .foregroundStyle(Color.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            caption("A new photo syncs once it has been in the album this long, which leaves time for your first edits.")
 
             Toggle("Start at login", isOn: Binding(
                 get: { model.launchAtLogin },
                 set: { model.setLaunchAtLogin($0) }
             ))
+            .toggleStyle(.switch)
+            .padding(.top, 2)
         }
     }
 
     private var saveBar: some View {
         HStack(spacing: 8) {
             Button("Save") { model.save() }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(!model.canSave)
                 .help("Checks run on the saved settings only.")
-            if model.hasUnsavedChanges {
-                Button("Revert") { model.revert() }
-                Text("Unsaved changes")
-                    .font(.caption)
-                    .foregroundStyle(Color.orange)
-            } else if model.hasSavedSettings {
-                Text("Settings saved")
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
-            }
+
+            Button("Revert") { model.revert() }
+                .disabled(!model.hasUnsavedChanges)
+
+            Spacer(minLength: 0)
+
+            Text(model.saveStateText)
+                .font(.caption)
+                .foregroundStyle(model.hasUnsavedChanges ? Color.orange : Color.secondary)
         }
     }
 
-    private var activity: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("Recent activity")
-                .font(.caption)
-                .foregroundStyle(Color.secondary)
-            if model.activity.isEmpty {
-                Text("Nothing yet.")
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
-            } else {
-                ForEach(Array(model.activity.enumerated()), id: \.offset) { _, line in
-                    Text(line)
-                        .font(.caption.monospaced())
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
+    // MARK: Actions
 
     private var footer: some View {
-        HStack {
-            Button(model.isSyncing ? "Syncing…" : "Sync now") { model.syncNow() }
-                .disabled(!model.canSync)
-                .help(model.syncNowHelp)
-            Button("Open log") { model.openLog() }
-            Spacer()
+        HStack(spacing: 8) {
+            Button {
+                model.syncNow()
+            } label: {
+                Label(model.isSyncing ? "Syncing…" : "Sync now", systemImage: "arrow.clockwise")
+            }
+            .disabled(!model.canSync)
+            .help(model.syncNowHelp)
+
+            Button {
+                model.openLog()
+            } label: {
+                Label("Open log", systemImage: "doc.plaintext")
+            }
+            .help("Every check writes what it did to ~/Library/Logs/LightroomSync/sync.log")
+
+            Spacer(minLength: 0)
+
             Button("Quit") { model.quit() }
         }
+    }
+
+    // MARK: Building blocks
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Color.secondary)
+            .textCase(.uppercase)
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 #endif
