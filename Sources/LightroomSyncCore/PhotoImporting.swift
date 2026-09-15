@@ -4,13 +4,21 @@ public struct PhotoImportRequest: Equatable {
     public let fileURL: URL
     public let originalFileName: String?
     public let captureDate: Date?
+    /// Where the photo was taken, so it lands on the Photos map and in Places. Photos reads GPS
+    /// out of a file on import too, but only when the file has it; renditions often do not.
+    public let location: PhotoLocation?
+    /// Whether to mark the photo a Favourite, from Lightroom's star rating.
+    public let isFavorite: Bool
     /// Name of the Photos album to add the photo to; nil adds it to the library only.
     public let albumName: String?
 
-    public init(fileURL: URL, originalFileName: String?, captureDate: Date?, albumName: String?) {
+    public init(fileURL: URL, originalFileName: String?, captureDate: Date?,
+                location: PhotoLocation? = nil, isFavorite: Bool = false, albumName: String?) {
         self.fileURL = fileURL
         self.originalFileName = originalFileName
         self.captureDate = captureDate
+        self.location = location
+        self.isFavorite = isFavorite
         self.albumName = albumName
     }
 }

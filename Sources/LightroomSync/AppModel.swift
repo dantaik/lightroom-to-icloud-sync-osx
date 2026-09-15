@@ -149,7 +149,7 @@ final class AppModel: ObservableObject {
             self.ledger = ledger
             let photoKit = PhotoKitImporter()
             engine = SyncEngine(client: client, ledger: ledger, importer: photoKit, photoLibrary: photoKit,
-                                resizer: ImageResizer(),
+                                resizer: ImageResizer(), metadataWriter: ImageMetadataWriter(),
                                 downloadDirectory: support.appendingPathComponent("downloads", isDirectory: true),
                                 sink: bridge)
             syncedCount = ledger.syncedCount

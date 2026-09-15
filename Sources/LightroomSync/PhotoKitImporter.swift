@@ -1,4 +1,5 @@
 #if os(macOS)
+import CoreLocation
 import Foundation
 import LightroomSyncCore
 import Photos
@@ -35,6 +36,12 @@ final class PhotoKitImporter: PhotoImporting {
             if let name = request.originalFileName { options.originalFilename = name }
             creation.addResource(with: .photo, fileURL: request.fileURL, options: options)
             if let date = request.captureDate { creation.creationDate = date }
+            // Photos reads GPS out of the file too, but only when the file has it. Setting it here
+            // is what puts a photo synced from a rendition on the map along with the rest.
+            if let location = request.location {
+                creation.location = CLLocation(latitude: location.latitude, longitude: location.longitude)
+            }
+            if request.isFavorite { creation.isFavorite = true }
             guard let placeholder = creation.placeholderForCreatedAsset else { return }
             box.localIdentifier = placeholder.localIdentifier
 
