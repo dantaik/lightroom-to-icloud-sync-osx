@@ -32,6 +32,7 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
         static let intervalValue = "intervalValue"
         static let intervalUnit = "intervalUnit"
         static let photoSize = "photoSize"
+        static let downloadConcurrency = "downloadConcurrency"
         static let legacyIntervalMinutes = "intervalMinutes"
     }
 
@@ -49,8 +50,17 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
             intervalUnit: interval.unit,
             // Settings saved before sizes existed name none, and get the default: photos no
             // larger than a Pro Display XDR rather than the full-size render they used to get.
-            photoSize: defaults.string(forKey: Keys.photoSize).flatMap(PhotoSize.init(rawValue:)) ?? .default
+            photoSize: defaults.string(forKey: Keys.photoSize).flatMap(PhotoSize.init(rawValue:)) ?? .default,
+            // Absent (0) in settings saved before photos were fetched several at a time, and
+            // `normalized` clamps anything odd back into range.
+            downloadConcurrency: loadDownloadConcurrency()
         ).normalized
+    }
+
+    /// Reads how many photos to fetch at once, defaulting for settings saved before it existed.
+    private func loadDownloadConcurrency() -> Int {
+        let stored = defaults.integer(forKey: Keys.downloadConcurrency)
+        return stored > 0 ? stored : SyncSettings.defaultDownloadConcurrency
     }
 
     /// Reads the interval, falling back to the plain minutes the first version stored.
@@ -70,6 +80,7 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
         defaults.set(settings.intervalValue, forKey: Keys.intervalValue)
         defaults.set(settings.intervalUnit.rawValue, forKey: Keys.intervalUnit)
         defaults.set(settings.photoSize.rawValue, forKey: Keys.photoSize)
+        defaults.set(settings.downloadConcurrency, forKey: Keys.downloadConcurrency)
         defaults.removeObject(forKey: Keys.legacyIntervalMinutes)
     }
 }

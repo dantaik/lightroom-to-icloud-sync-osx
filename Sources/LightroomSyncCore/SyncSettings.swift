@@ -54,22 +54,37 @@ public struct SyncSettings: Equatable, Codable {
     /// How large synced photos are. Full-size renders are slow to move and larger than any
     /// screen, so the default caps them at a Pro Display XDR's width.
     public var photoSize: PhotoSize
+    /// How many photos are fetched from Lightroom at once. See ``downloadConcurrencyRange``.
+    public var downloadConcurrency: Int
 
     public static let defaultIntervalValue = 15
     public static let defaultIntervalUnit = IntervalUnit.minutes
+
+    /// Fetching one photo at a time spends nearly all of a check waiting on Lightroom to render
+    /// the next one. Five at once keeps that wait overlapped without leaning on Adobe's servers.
+    public static let defaultDownloadConcurrency = 5
+    /// 1 turns the overlap off, which is how the app behaved before it existed. The top is a
+    /// limit on what these undocumented endpoints are asked to do at once, not a target.
+    public static let downloadConcurrencyRange = 1...10
+
+    public static func clamp(downloadConcurrency value: Int) -> Int {
+        min(max(value, downloadConcurrencyRange.lowerBound), downloadConcurrencyRange.upperBound)
+    }
 
     public static let empty = SyncSettings(shareLink: "", albumID: nil, photosAlbumName: "",
                                            intervalValue: defaultIntervalValue,
                                            intervalUnit: defaultIntervalUnit)
 
     public init(shareLink: String, albumID: String?, photosAlbumName: String,
-                intervalValue: Int, intervalUnit: IntervalUnit, photoSize: PhotoSize = .default) {
+                intervalValue: Int, intervalUnit: IntervalUnit, photoSize: PhotoSize = .default,
+                downloadConcurrency: Int = SyncSettings.defaultDownloadConcurrency) {
         self.shareLink = shareLink
         self.albumID = albumID
         self.photosAlbumName = photosAlbumName
         self.intervalValue = intervalValue
         self.intervalUnit = intervalUnit
         self.photoSize = photoSize
+        self.downloadConcurrency = downloadConcurrency
     }
 
     /// The form that gets stored and used: trimmed, clamped, with empty text as nil.
@@ -82,7 +97,8 @@ public struct SyncSettings: Equatable, Codable {
             photosAlbumName: photosAlbumName.trimmingCharacters(in: .whitespacesAndNewlines),
             intervalValue: intervalUnit.clamp(intervalValue),
             intervalUnit: intervalUnit,
-            photoSize: photoSize
+            photoSize: photoSize,
+            downloadConcurrency: Self.clamp(downloadConcurrency: downloadConcurrency)
         )
     }
 
@@ -122,7 +138,8 @@ public struct SyncSettings: Equatable, Codable {
                                  photosAlbumName: settings.photosAlbumName.isEmpty ? nil : settings.photosAlbumName,
                                  checkInterval: settings.checkInterval,
                                  photoSize: settings.photoSize,
-                                 ignoreDelays: ignoreDelays)
+                                 ignoreDelays: ignoreDelays,
+                                 downloadConcurrency: settings.downloadConcurrency)
     }
 }
 

@@ -171,6 +171,25 @@ struct MenuPanel: View {
             .pickerStyle(.menu)
 
             caption(model.editor.draft.photoSize.summary)
+
+            HStack(spacing: 6) {
+                Text("Fetch at once")
+
+                Spacer(minLength: 0)
+
+                TextField("", value: $model.editor.draft.downloadConcurrency, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .font(.body.monospacedDigit())
+                    .frame(width: 54)
+
+                Stepper("", value: $model.editor.draft.downloadConcurrency,
+                        in: SyncSettings.downloadConcurrencyRange)
+                    .labelsHidden()
+            }
+            .padding(.top, 2)
+
+            caption("Lightroom renders each full-size photo on demand, and a check spends most of its time waiting for that. Fetching several at once overlaps the waiting. Lower it if the log says Lightroom is asking you to slow down.")
         }
     }
 
@@ -205,7 +224,7 @@ struct MenuPanel: View {
                 .frame(width: 96)
             }
 
-            caption("A new photo syncs once it has been in the album this long, which leaves time for your first edits.")
+            caption("How often the album is checked. A new photo waits this long before syncing, up to 15 minutes, which leaves time for your first edits.")
 
             Toggle("Start at login", isOn: Binding(
                 get: { model.launchAtLogin },

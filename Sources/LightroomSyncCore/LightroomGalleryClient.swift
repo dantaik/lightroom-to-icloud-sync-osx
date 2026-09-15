@@ -31,6 +31,9 @@ public struct DownloadedPhoto: Equatable {
     public let fileName: String?
     public let contentType: String?
     public let byteCount: Int
+    /// How long this download spent waiting out a "slow down" from Adobe. Non-zero means the
+    /// photos are being fetched faster than the share will serve them.
+    public var throttleWait: Duration = .zero
 }
 
 public enum LightroomError: Error, LocalizedError, Equatable {
@@ -73,10 +76,13 @@ public final class LightroomGalleryClient {
 
     private let transport: HTTPTransport
     private let userAgent: String
+    private let backoff: [Duration]
 
-    public init(transport: HTTPTransport, userAgent: String = LightroomGalleryClient.defaultUserAgent) {
+    public init(transport: HTTPTransport, userAgent: String = LightroomGalleryClient.defaultUserAgent,
+                throttleBackoff: [Duration] = LightroomGalleryClient.throttleBackoff) {
         self.transport = transport
         self.userAgent = userAgent
+        self.backoff = throttleBackoff
     }
 
     /// Turns a pasted link into a share ID (following `adobe.ly` redirects when needed).
@@ -153,12 +159,29 @@ public final class LightroomGalleryClient {
         return try await downloadImage(at: renditionURL, assetID: assetID, to: directory)
     }
 
+    /// How long to wait before asking again after being told to slow down, once per attempt.
+    /// Photos are fetched several at a time, so a burst can be throttled rather than refused, and
+    /// waiting it out is the difference between a slower pass and a pass full of failed photos.
+    public static let throttleBackoff: [Duration] = [.seconds(2), .seconds(5), .seconds(15)]
+    static let throttleStatuses: Set<Int> = [429, 503]
+
     /// The part both downloads share: fetch, check that it really is an image, write it out.
     private func downloadImage(at url: URL, assetID: String, to directory: URL) async throws -> DownloadedPhoto {
-        let response = try await transport.get(url, headers: [
-            "User-Agent": userAgent,
-            "Accept": "image/jpeg,image/*;q=0.9,*/*;q=0.5",
-        ])
+        var attempt = 0
+        var waited = Duration.zero
+        var response: HTTPResponse
+        while true {
+            response = try await transport.get(url, headers: [
+                "User-Agent": userAgent,
+                "Accept": "image/jpeg,image/*;q=0.9,*/*;q=0.5",
+            ])
+            guard Self.throttleStatuses.contains(response.status), attempt < backoff.count
+            else { break }
+            let wait = Self.retryAfter(response.header("retry-after")) ?? backoff[attempt]
+            try await Task.sleep(for: wait)
+            waited += wait
+            attempt += 1
+        }
         guard response.status == 200 else { throw LightroomError.httpStatus(response.status, url) }
         let contentType = response.header("content-type")
         guard let contentType, contentType.lowercased().hasPrefix("image/") else {
@@ -168,10 +191,21 @@ public final class LightroomGalleryClient {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let fileURL = directory.appendingPathComponent("\(assetID).\(Self.fileExtension(for: contentType))")
         try response.body.write(to: fileURL, options: .atomic)
-        return DownloadedPhoto(fileURL: fileURL, fileName: fileName, contentType: contentType, byteCount: response.body.count)
+        return DownloadedPhoto(fileURL: fileURL, fileName: fileName, contentType: contentType,
+                               byteCount: response.body.count, throttleWait: waited)
     }
 
     // MARK: - Helpers
+
+    /// `Retry-After: 30`, in seconds, when the server names a wait of its own. The HTTP-date form
+    /// is ignored and anything beyond two minutes is refused: a wait that long is worse for the
+    /// pass than the backoff already in hand.
+    static func retryAfter(_ header: String?) -> Duration? {
+        guard let header, let seconds = Int(header.trimmingCharacters(in: .whitespaces)),
+              seconds > 0, seconds <= 120
+        else { return nil }
+        return .seconds(seconds)
+    }
 
     static func fileExtension(for contentType: String) -> String {
         switch contentType.lowercased().split(separator: ";").first.map(String.init) ?? "" {

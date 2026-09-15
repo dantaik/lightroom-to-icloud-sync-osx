@@ -8,15 +8,19 @@ public struct SyncConfiguration: Equatable {
     /// How large the synced photos should be.
     public var photoSize: PhotoSize
     public var ignoreDelays: Bool
+    /// How many photos are fetched at once. Clamped to ``SyncSettings/downloadConcurrencyRange``.
+    public var downloadConcurrency: Int
 
     public init(shareLink: String, preferredAlbumID: String? = nil, photosAlbumName: String? = nil,
-                checkInterval: TimeInterval, photoSize: PhotoSize = .default, ignoreDelays: Bool = false) {
+                checkInterval: TimeInterval, photoSize: PhotoSize = .default, ignoreDelays: Bool = false,
+                downloadConcurrency: Int = SyncSettings.defaultDownloadConcurrency) {
         self.shareLink = shareLink
         self.preferredAlbumID = preferredAlbumID
         self.photosAlbumName = photosAlbumName
         self.checkInterval = checkInterval
         self.photoSize = photoSize
         self.ignoreDelays = ignoreDelays
+        self.downloadConcurrency = downloadConcurrency
     }
 }
 
@@ -141,138 +145,72 @@ public final class SyncEngine {
         let refiling = Stopwatch()
         await refileIntoAlbum(albumName, photos: photos, report: &report)
         report.timings.refiling = refiling.elapsed
+
+        // Whatever a previous pass left behind when it was stopped mid-fetch. The directory is
+        // this engine's alone and only one pass uses it at a time, so anything already in it is a
+        // leftover. Several photos are now in flight at once, so a stop strands several files.
+        sweepDownloadDirectory()
         sink?.progress(completed: 0, total: candidates.count)
 
-        for (index, photo) in candidates.enumerated() {
-            defer { sink?.progress(completed: index + 1, total: candidates.count) }
-            try Task.checkCancellation()
-            let name = photo.fileName ?? photo.assetID
-            var timings = PhotoTimings()
-            defer { report.timings.add(timings) }
+        let width = max(1, SyncSettings.clamp(downloadConcurrency: config.downloadConcurrency))
+        var completed = 0
+        /// Counts one candidate as dealt with, whatever became of it.
+        func advance() {
+            completed += 1
+            sink?.progress(completed: completed, total: candidates.count)
+        }
 
-            if let sha = photo.originalSHA256, let existing = ledger.entry(withOriginalSHA256: sha) {
-                var duplicate = existing
-                duplicate.assetID = photo.assetID
-                duplicate.shareID = shareID
-                duplicate.albumID = album.id
-                duplicate.syncedAt = now
-                let recording = Stopwatch()
-                try ledger.record(duplicate)
-                timings.ledger += recording.elapsed
-                report.duplicates += 1
-                log(.info, "Skipping \(name): the same original was already synced")
-                continue
+        // Three stages. What touches the ledger, the report or Photos runs here on one task and
+        // stays in order; only the fetch — the download, which is Lightroom rendering on demand,
+        // plus the resizing and metadata that follow it — is run several at a time. Widening the
+        // other two would buy nothing (Photos serializes its own changes) and would race: the
+        // ledger is a plain dictionary behind a whole-file write, and the duplicate checks read
+        // it before acting on it.
+        try await withThrowingTaskGroup(of: FetchOutcome.self) { group in
+            var next = 0
+            var inFlight = 0
+            /// The originals being fetched right now, so that the same one is never fetched twice.
+            var beingFetched: Set<String> = []
+
+            while true {
+                while inFlight < width, next < candidates.count {
+                    try Task.checkCancellation()
+                    let photo = candidates[next]
+                    // A photo whose original is already being fetched has to wait for it. The
+                    // duplicate check reads the ledger, and the entry that would answer it is not
+                    // written until that fetch has been imported and recorded — so dispatching
+                    // this one now would import the same original twice. Left in place, not
+                    // consumed: it is settled again once the one ahead of it has landed.
+                    if let sha = photo.originalSHA256, beingFetched.contains(sha) { break }
+                    next += 1
+                    let settlement = try await settle(photo, shareID: shareID, albumID: album.id,
+                                                      albumName: albumName, policy: policy, now: now)
+                    switch settlement {
+                    case .fetch(let name, let timings):
+                        if let sha = photo.originalSHA256 { beingFetched.insert(sha) }
+                        group.addTask { [self] in
+                            await fetch(photo, name: name, shareID: shareID, config: config, timings: timings)
+                        }
+                        inFlight += 1
+                    case .settled(let outcome, let timings):
+                        switch outcome {
+                        case .duplicate: report.duplicates += 1
+                        case .waiting: report.pending += 1
+                        case .foundInPhotos: report.foundInPhotos += 1
+                        }
+                        report.timings.add(timings)
+                        advance()
+                    }
+                }
+                // `beingFetched` is only ever non-empty while something is in flight, so a photo
+                // held back above always has a fetch left to drain and cannot deadlock here.
+                guard inFlight > 0, let outcome = try await group.next() else { break }
+                inFlight -= 1
+                if let sha = outcome.photo.originalSHA256 { beingFetched.remove(sha) }
+                await finish(outcome, shareID: shareID, albumID: album.id, albumName: albumName,
+                             now: now, report: &report)
+                advance()
             }
-
-            // The waiting rules come before the Photos lookup below because they are free and it
-            // is not: it scans every asset in the library within a day of the capture date, and a
-            // photo that is not eligible yet would pay for that on every pass until it was.
-            let noting = Stopwatch()
-            let firstSeen = try ledger.noteSeen(assetID: photo.assetID, at: now)
-            timings.ledger += noting.elapsed
-            if case .wait(let reason) = policy.decision(for: photo, firstSeen: firstSeen, now: now) {
-                report.pending += 1
-                log(.info, "Waiting on \(name): \(reason)")
-                continue
-            }
-
-            let searching = Stopwatch()
-            let lookup = await findInPhotos(photo, albumName: albumName)
-            if lookup.queried {
-                timings.lookup = searching.elapsed
-                timings.didLookup = true
-            }
-            if let identifier = lookup.identifier {
-                let recording = Stopwatch()
-                try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
-                                              fileName: photo.expectedPhotosFileName ?? photo.fileName,
-                                              originalSHA256: photo.originalSHA256,
-                                              photosLocalIdentifier: identifier, photosAlbumName: albumName,
-                                              syncedAt: now, captureDate: photo.captureDate,
-                                              pixelWidth: nil, pixelHeight: nil, downgraded: false))
-                timings.ledger += recording.elapsed
-                report.foundInPhotos += 1
-                log(.info, "\(name) is already in Photos; recorded it without downloading (lookup \(Stopwatch.describe(timings.lookup)))")
-                continue
-            }
-
-            let downloaded: DownloadedPhoto
-            let fetching = Stopwatch()
-            do {
-                downloaded = try await download(photo, shareID: shareID, size: config.photoSize, name: name)
-                timings.download = fetching.elapsed
-                timings.didDownload = true
-            } catch LightroomError.downloadsDisabled {
-                throw LightroomError.downloadsDisabled
-            } catch {
-                timings.download = fetching.elapsed
-                timings.didDownload = true
-                report.failed += 1
-                log(.error, "Download failed for \(name) after \(Stopwatch.describe(timings.download)): \(error.localizedDescription)")
-                continue
-            }
-
-            // What Lightroom served is measured against what the chosen size asks for, not against
-            // the edited photo: a photo held back by the size setting is doing what it was told.
-            let sizing = Stopwatch()
-            let servedSize = JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL)
-            var downgraded = false
-            if let servedSize,
-               let intended = config.photoSize.intendedLongEdge(editedLongEdge: photo.expectedLongEdge),
-               servedSize.longEdge + 2 < intended {
-                downgraded = true
-                report.downgraded += 1
-                log(.warning, "\(name): Lightroom served \(servedSize.width)×\(servedSize.height) but the edited photo is \(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0). Photos synced from Lightroom Classic only have smart previews in the cloud.")
-            }
-
-            let shrunk = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
-            if shrunk != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
-            let size = shrunk == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: shrunk) ?? servedSize)
-            timings.resize = sizing.elapsed
-
-            let describing = Stopwatch()
-            let (fileURL, metadata) = describe(shrunk, from: photo, name: name, report: &report)
-            timings.metadata = describing.elapsed
-            // Lightroom serves a JPEG named after the original, and a rendition carries no name at
-            // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
-            let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
-
-            let request = PhotoImportRequest(fileURL: fileURL,
-                                             originalFileName: fileName,
-                                             captureDate: metadata.captureDate ?? photo.captureDate,
-                                             location: metadata.location,
-                                             isFavorite: metadata.isFavorite,
-                                             albumName: albumName)
-            let localIdentifier: String
-            let importing = Stopwatch()
-            do {
-                localIdentifier = try await importer.importPhoto(request)
-                timings.importing = importing.elapsed
-                timings.didImport = true
-            } catch {
-                timings.importing = importing.elapsed
-                timings.didImport = true
-                try? FileManager.default.removeItem(at: fileURL)
-                report.failed += 1
-                log(.error, "Import into Photos failed for \(name): \(error.localizedDescription)")
-                continue
-            }
-            try? FileManager.default.removeItem(at: fileURL)
-
-            let recording = Stopwatch()
-            try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: album.id,
-                                          fileName: fileName,
-                                          originalSHA256: photo.originalSHA256,
-                                          photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
-                                          syncedAt: now, captureDate: request.captureDate,
-                                          pixelWidth: size?.width, pixelHeight: size?.height,
-                                          downgraded: downgraded))
-            timings.ledger += recording.elapsed
-            report.synced += 1
-            let dimensions = size.map { " (\($0.width)×\($0.height))" } ?? ""
-            let breakdown = timings.breakdown
-            log(.info, "Synced \(name)\(dimensions) in \(Stopwatch.describe(timings.total))"
-                + (breakdown.isEmpty ? "" : " — \(breakdown)"))
         }
 
         report.finishedAt = Date()
@@ -282,6 +220,241 @@ public final class SyncEngine {
         // above to be ranked by hand.
         if let diagnosis = report.timings.diagnosis { log(.info, diagnosis) }
         return report
+    }
+
+    // MARK: - The three stages
+
+    /// What the serial stage decided about a photo, before anything is fetched.
+    private enum Settlement {
+        enum Outcome { case duplicate, waiting, foundInPhotos }
+        /// Nothing more to do: a duplicate, not eligible yet, or Photos already had it.
+        case settled(Outcome, PhotoTimings)
+        /// It has to be fetched from Lightroom.
+        case fetch(name: String, timings: PhotoTimings)
+    }
+
+    /// What the concurrent fetch stage produced. It carries a file on disk, so every path out of
+    /// the fetch either hands that file on to be imported or has already deleted it.
+    private enum FetchOutcome {
+        case fetched(FetchedPhoto)
+        case failed(photo: LightroomPhoto, name: String, message: String, timings: PhotoTimings)
+
+        var photo: LightroomPhoto {
+            switch self {
+            case .fetched(let fetched): return fetched.photo
+            case .failed(let photo, _, _, _): return photo
+            }
+        }
+    }
+
+    /// A photo downloaded, resized and described, waiting its turn to be imported.
+    private struct FetchedPhoto {
+        let photo: LightroomPhoto
+        let name: String
+        let fileURL: URL
+        let fileName: String?
+        let metadata: PhotoMetadata
+        let size: JPEGInfo.PixelSize?
+        let downgraded: Bool
+        let metadataRestored: Bool
+        var timings: PhotoTimings
+    }
+
+    /// Stage one, serial: everything that reads or writes the ledger, and the Photos lookup.
+    ///
+    /// The waiting rules come before the Photos lookup because they are free and it is not: it
+    /// scans every asset in the library within a day of the capture date, and a photo that is not
+    /// eligible yet would pay for that on every pass until it was.
+    private func settle(_ photo: LightroomPhoto, shareID: String, albumID: String, albumName: String?,
+                        policy: SyncPolicy, now: Date) async throws -> Settlement {
+        let name = photo.fileName ?? photo.assetID
+        var timings = PhotoTimings()
+
+        if let sha = photo.originalSHA256, let existing = ledger.entry(withOriginalSHA256: sha) {
+            var duplicate = existing
+            duplicate.assetID = photo.assetID
+            duplicate.shareID = shareID
+            duplicate.albumID = albumID
+            duplicate.syncedAt = now
+            let recording = Stopwatch()
+            try ledger.record(duplicate)
+            timings.ledger += recording.elapsed
+            log(.info, "Skipping \(name): the same original was already synced")
+            return .settled(.duplicate, timings)
+        }
+
+        let noting = Stopwatch()
+        let firstSeen = try ledger.noteSeen(assetID: photo.assetID, at: now)
+        timings.ledger += noting.elapsed
+        if case .wait(let reason) = policy.decision(for: photo, firstSeen: firstSeen, now: now) {
+            log(.info, "Waiting on \(name): \(reason)")
+            return .settled(.waiting, timings)
+        }
+
+        let searching = Stopwatch()
+        let lookup = await findInPhotos(photo, albumName: albumName)
+        if lookup.queried {
+            timings.lookup = searching.elapsed
+            timings.didLookup = true
+        }
+        if let identifier = lookup.identifier {
+            let recording = Stopwatch()
+            try ledger.record(LedgerEntry(assetID: photo.assetID, shareID: shareID, albumID: albumID,
+                                          fileName: photo.expectedPhotosFileName ?? photo.fileName,
+                                          originalSHA256: photo.originalSHA256,
+                                          photosLocalIdentifier: identifier, photosAlbumName: albumName,
+                                          syncedAt: now, captureDate: photo.captureDate,
+                                          pixelWidth: nil, pixelHeight: nil, downgraded: false))
+            timings.ledger += recording.elapsed
+            log(.info, "\(name) is already in Photos; recorded it without downloading (lookup \(Stopwatch.describe(timings.lookup)))")
+            return .settled(.foundInPhotos, timings)
+        }
+
+        return .fetch(name: name, timings: timings)
+    }
+
+    /// Stage two, run several at a time: download the photo, bring it to the chosen size, and
+    /// make sure the file says what Lightroom knows about it.
+    ///
+    /// Nothing here touches the ledger, the report or Photos, which is what makes running several
+    /// of these at once safe. It never throws: a photo that cannot be fetched is one failure in
+    /// the report, not the end of the pass, and cancellation has to leave the disk clean rather
+    /// than unwind past the file it was writing.
+    private func fetch(_ photo: LightroomPhoto, name: String, shareID: String,
+                       config: SyncConfiguration, timings: PhotoTimings) async -> FetchOutcome {
+        var timings = timings
+        let downloaded: DownloadedPhoto
+        let fetching = Stopwatch()
+        do {
+            downloaded = try await download(photo, shareID: shareID, size: config.photoSize, name: name)
+            timings.download = fetching.elapsed
+            timings.didDownload = true
+        } catch {
+            timings.download = fetching.elapsed
+            timings.didDownload = true
+            let message = error is CancellationError
+                ? "the check was stopped" : error.localizedDescription
+            return .failed(photo: photo, name: name, message: message, timings: timings)
+        }
+
+        if downloaded.throttleWait > .zero {
+            log(.warning, "\(name): Lightroom asked for \(Stopwatch.describe(downloaded.throttleWait)) of waiting before it would serve this photo. Lower “Fetch at once” if this keeps happening.")
+        }
+
+        // From here a file exists, so every way out has to account for it. Being cancelled with
+        // the download already in hand is the common one: a stop should not leave 25 MB behind.
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: downloaded.fileURL)
+            return .failed(photo: photo, name: name, message: "the check was stopped", timings: timings)
+        }
+
+        // What Lightroom served is measured against what the chosen size asks for, not against
+        // the edited photo: a photo held back by the size setting is doing what it was told.
+        let sizing = Stopwatch()
+        let servedSize = JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL)
+        var downgraded = false
+        if let servedSize,
+           let intended = config.photoSize.intendedLongEdge(editedLongEdge: photo.expectedLongEdge),
+           servedSize.longEdge + 2 < intended {
+            downgraded = true
+            log(.warning, "\(name): Lightroom served \(servedSize.width)×\(servedSize.height) but the edited photo is \(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0). Photos synced from Lightroom Classic only have smart previews in the cloud.")
+        }
+
+        let shrunk = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
+        if shrunk != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
+        let size = shrunk == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: shrunk) ?? servedSize)
+        timings.resize = sizing.elapsed
+
+        let describing = Stopwatch()
+        let described = describe(shrunk, from: photo, name: name)
+        timings.metadata = describing.elapsed
+
+        // Lightroom serves a JPEG named after the original, and a rendition carries no name at
+        // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
+        let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
+        return .fetched(FetchedPhoto(photo: photo, name: name, fileURL: described.fileURL,
+                                     fileName: fileName, metadata: described.metadata, size: size,
+                                     downgraded: downgraded, metadataRestored: described.restored,
+                                     timings: timings))
+    }
+
+    /// Stage three, serial: hand the file to Photos and write down what happened.
+    ///
+    /// Importing and recording sit next to each other on purpose. A photo that reaches Photos but
+    /// is not recorded — the app quit in between — is found by the Photos lookup on the next pass
+    /// and recorded then, without being downloaded or imported twice.
+    private func finish(_ outcome: FetchOutcome, shareID: String, albumID: String, albumName: String?,
+                        now: Date, report: inout SyncReport) async {
+        switch outcome {
+        case .failed(_, let name, let message, let timings):
+            report.timings.add(timings)
+            report.failed += 1
+            log(.error, "Download failed for \(name) after \(Stopwatch.describe(timings.download)): \(message)")
+
+        case .fetched(var fetched):
+            if fetched.downgraded { report.downgraded += 1 }
+            if fetched.metadataRestored {
+                report.metadataRestored += 1
+                log(.info, "\(fetched.name) arrived without its EXIF; Lightroom's copy of it was written back in")
+            }
+            let request = PhotoImportRequest(fileURL: fetched.fileURL,
+                                             originalFileName: fetched.fileName,
+                                             captureDate: fetched.metadata.captureDate ?? fetched.photo.captureDate,
+                                             location: fetched.metadata.location,
+                                             isFavorite: fetched.metadata.isFavorite,
+                                             albumName: albumName)
+            let localIdentifier: String
+            let importing = Stopwatch()
+            do {
+                localIdentifier = try await importer.importPhoto(request)
+                fetched.timings.importing = importing.elapsed
+                fetched.timings.didImport = true
+            } catch {
+                fetched.timings.importing = importing.elapsed
+                fetched.timings.didImport = true
+                try? FileManager.default.removeItem(at: fetched.fileURL)
+                report.timings.add(fetched.timings)
+                report.failed += 1
+                log(.error, "Import into Photos failed for \(fetched.name): \(error.localizedDescription)")
+                return
+            }
+            try? FileManager.default.removeItem(at: fetched.fileURL)
+
+            let recording = Stopwatch()
+            do {
+                try ledger.record(LedgerEntry(assetID: fetched.photo.assetID, shareID: shareID, albumID: albumID,
+                                              fileName: fetched.fileName,
+                                              originalSHA256: fetched.photo.originalSHA256,
+                                              photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
+                                              syncedAt: now, captureDate: request.captureDate,
+                                              pixelWidth: fetched.size?.width, pixelHeight: fetched.size?.height,
+                                              downgraded: fetched.downgraded))
+            } catch {
+                // The photo is in Photos either way. Saying so matters more than the pass ending
+                // here: the next pass finds it in the library and records it then.
+                log(.error, "\(fetched.name) was imported but could not be recorded in the ledger (\(error.localizedDescription)); the next check will pick it up from Photos")
+            }
+            fetched.timings.ledger += recording.elapsed
+            report.timings.add(fetched.timings)
+            report.synced += 1
+            let dimensions = fetched.size.map { " (\($0.width)×\($0.height))" } ?? ""
+            let breakdown = fetched.timings.breakdown
+            log(.info, "Synced \(fetched.name)\(dimensions) in \(Stopwatch.describe(fetched.timings.total))"
+                + (breakdown.isEmpty ? "" : " — \(breakdown)"))
+        }
+    }
+
+    /// Clears out the download directory, which holds nothing worth keeping between passes: a
+    /// file in it is either a download in progress or one a stopped pass abandoned.
+    private func sweepDownloadDirectory() {
+        let manager = FileManager.default
+        guard let leftovers = try? manager.contentsOfDirectory(at: downloadDirectory,
+                                                               includingPropertiesForKeys: nil)
+        else { return }
+        for file in leftovers { try? manager.removeItem(at: file) }
+        if !leftovers.isEmpty {
+            log(.info, "Cleared \(leftovers.count) unfinished download(s) left by an earlier check")
+        }
     }
 
     /// Fetches a photo at the chosen size.
@@ -328,10 +501,12 @@ public final class SyncEngine {
     /// Photos out of one has no camera, no keywords and no place on the map unless they are put
     /// back. Anything already in the file is left alone; only the gaps are filled.
     ///
-    /// Returns the file to import and the metadata that was settled on. Failing to write metadata
-    /// is not failing to sync: the photo is imported as served and the log says what was lost.
-    private func describe(_ fileURL: URL, from photo: LightroomPhoto, name: String,
-                          report: inout SyncReport) -> (URL, PhotoMetadata) {
+    /// Returns the file to import, the metadata that was settled on, and whether the file had
+    /// arrived stripped of it. Counting that is left to the caller: this runs on several photos
+    /// at once and the report belongs to the one task that walks them in order. Failing to write
+    /// metadata is not failing to sync: the photo is imported as served and the log says so.
+    private func describe(_ fileURL: URL, from photo: LightroomPhoto,
+                          name: String) -> (fileURL: URL, metadata: PhotoMetadata, restored: Bool) {
         let embedded = metadataWriter.embeddedMetadata(fileAt: fileURL)
         let captureTime = CaptureTime.resolve(rawCaptureDate: photo.rawCaptureDate,
                                               embeddedOffsetSeconds: embedded.captureTimeZoneOffset)
@@ -340,18 +515,15 @@ public final class SyncEngine {
         metadata.captureTimeZoneOffset = captureTime.offsetSeconds
 
         // Nothing to say about the photo means nothing to write, and no file rewritten for nothing.
-        guard !metadata.isEmpty else { return (fileURL, metadata) }
-        if embedded.looksStripped {
-            report.metadataRestored += 1
-            log(.info, "\(name) arrived without its EXIF; writing Lightroom's copy of it back in")
-        }
+        guard !metadata.isEmpty else { return (fileURL, metadata, false) }
+        let restored = embedded.looksStripped
         do {
             let written = try metadataWriter.write(metadata, toFileAt: fileURL)
             if written != fileURL { try? FileManager.default.removeItem(at: fileURL) }
-            return (written, metadata)
+            return (written, metadata, restored)
         } catch {
             log(.warning, "Could not write metadata into \(name) (\(error.localizedDescription)); importing it as it was served")
-            return (fileURL, metadata)
+            return (fileURL, metadata, restored)
         }
     }
 

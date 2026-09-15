@@ -92,6 +92,28 @@ final class SyncSettingsTests: XCTestCase {
         XCTAssertTrue(configuration.ignoreDelays)
     }
 
+    func testHowManyPhotosAreFetchedAtOnceDefaultsToFiveAndStaysInRange() {
+        XCTAssertEqual(SyncSettings.defaultDownloadConcurrency, 5)
+        XCTAssertEqual(SyncSettings.empty.downloadConcurrency, 5)
+        XCTAssertEqual(SyncSettings.downloadConcurrencyRange, 1...10)
+
+        XCTAssertEqual(SyncSettings.clamp(downloadConcurrency: 3), 3)
+        XCTAssertEqual(SyncSettings.clamp(downloadConcurrency: 0), 1, "one at a time is the floor")
+        XCTAssertEqual(SyncSettings.clamp(downloadConcurrency: -4), 1)
+        XCTAssertEqual(SyncSettings.clamp(downloadConcurrency: 99), 10)
+    }
+
+    func testHowManyPhotosAreFetchedAtOnceIsClampedAndReachesTheEngine() {
+        var oversized = settings()
+        oversized.downloadConcurrency = 40
+        XCTAssertEqual(oversized.normalized.downloadConcurrency, 10)
+        XCTAssertEqual(oversized.syncConfiguration(ignoreDelays: false).downloadConcurrency, 10)
+
+        var chosen = settings()
+        chosen.downloadConcurrency = 2
+        XCTAssertEqual(chosen.syncConfiguration(ignoreDelays: false).downloadConcurrency, 2)
+    }
+
     func testAnEmptyPhotosAlbumMeansTheLibraryOnly() {
         XCTAssertNil(settings(photos: "   ").syncConfiguration(ignoreDelays: false).photosAlbumName)
     }
