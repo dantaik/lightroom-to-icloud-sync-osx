@@ -169,25 +169,28 @@ public final class SyncEngine {
         try await withThrowingTaskGroup(of: FetchOutcome.self) { group in
             var next = 0
             var inFlight = 0
-            /// The originals being fetched right now, so that the same one is never fetched twice.
+            /// The identities being fetched right now, so that the same photograph is never
+            /// fetched twice. See ``identityKeys(of:)``.
             var beingFetched: Set<String> = []
 
             while true {
                 while inFlight < width, next < candidates.count {
                     try Task.checkCancellation()
                     let photo = candidates[next]
-                    // A photo whose original is already being fetched has to wait for it. The
-                    // duplicate check reads the ledger, and the entry that would answer it is not
-                    // written until that fetch has been imported and recorded — so dispatching
-                    // this one now would import the same original twice. Left in place, not
-                    // consumed: it is settled again once the one ahead of it has landed.
-                    if let sha = photo.originalSHA256, beingFetched.contains(sha) { break }
+                    // A photo that shares an identity with one already being fetched has to wait
+                    // for it. Both duplicate checks are answered by a ledger entry that is not
+                    // written until that fetch has been imported and recorded, and so is the
+                    // Photos lookup, which cannot find a photo that is still downloading — so
+                    // dispatching this one now would import the same photograph twice. Left in
+                    // place, not consumed: it is settled again once the one ahead of it has landed.
+                    let identities = Self.identityKeys(of: photo)
+                    if identities.contains(where: beingFetched.contains) { break }
                     next += 1
                     let settlement = try await settle(photo, shareID: shareID, albumID: album.id,
                                                       albumName: albumName, policy: policy, now: now)
                     switch settlement {
                     case .fetch(let name, let timings):
-                        if let sha = photo.originalSHA256 { beingFetched.insert(sha) }
+                        beingFetched.formUnion(identities)
                         group.addTask { [self] in
                             await fetch(photo, name: name, shareID: shareID, config: config, timings: timings)
                         }
@@ -206,7 +209,9 @@ public final class SyncEngine {
                 // held back above always has a fetch left to drain and cannot deadlock here.
                 guard inFlight > 0, let outcome = try await group.next() else { break }
                 inFlight -= 1
-                if let sha = outcome.photo.originalSHA256 { beingFetched.remove(sha) }
+                // Safe to subtract wholesale: a photo sharing any of these keys was held back
+                // above, so no two photos in flight ever carry the same one.
+                beingFetched.subtract(Self.identityKeys(of: outcome.photo))
                 await finish(outcome, shareID: shareID, albumID: album.id, albumName: albumName,
                              now: now, report: &report)
                 advance()
@@ -270,8 +275,8 @@ public final class SyncEngine {
         let name = photo.fileName ?? photo.assetID
         var timings = PhotoTimings()
 
-        if let sha = photo.originalSHA256, let existing = ledger.entry(withOriginalSHA256: sha) {
-            var duplicate = existing
+        if let match = syncedDuplicate(of: photo) {
+            var duplicate = match.entry
             duplicate.assetID = photo.assetID
             duplicate.shareID = shareID
             duplicate.albumID = albumID
@@ -279,7 +284,7 @@ public final class SyncEngine {
             let recording = Stopwatch()
             try ledger.record(duplicate)
             timings.ledger += recording.elapsed
-            log(.info, "Skipping \(name): the same original was already synced")
+            log(.info, "Skipping \(name): \(match.reason)")
             return .settled(.duplicate, timings)
         }
 
@@ -311,6 +316,40 @@ public final class SyncEngine {
         }
 
         return .fetch(name: name, timings: timings)
+    }
+
+    /// An already-synced photo that is this same photograph, and why it counts as one.
+    ///
+    /// Two things can say so, and both are free — they only read the ledger. The original's hash
+    /// is the exact one, when Lightroom reports it for both copies. The file name and capture time
+    /// are what is left when it does not: the same camera file name within a day of the same
+    /// capture time is the same photograph, which is the very match the Photos lookup makes
+    /// against the library. Making it here as well is what catches a copy whose twin was synced by
+    /// an earlier pass, and what still holds when Photos cannot be asked.
+    private func syncedDuplicate(of photo: LightroomPhoto) -> (entry: LedgerEntry, reason: String)? {
+        if let sha = photo.originalSHA256, let existing = ledger.entry(withOriginalSHA256: sha) {
+            return (existing, "the same original was already synced")
+        }
+        if let fileName = photo.expectedPhotosFileName, let captureDate = photo.captureDate,
+           let existing = ledger.entry(withFileName: fileName, captureDate: captureDate,
+                                       tolerance: Self.captureDateTolerance) {
+            return (existing, "\(fileName) was already synced with the same capture time")
+        }
+        return nil
+    }
+
+    /// What makes two album entries the same photograph, as keys a set can hold: one per identity
+    /// ``syncedDuplicate(of:)`` and the Photos lookup match on. A photo may have both or neither.
+    ///
+    /// The capture time is deliberately not part of the name key. Both of those checks match it
+    /// within a day, which no exact key can express, so the name alone stands for it — the wider
+    /// of the two nets, which is the right way round here: a photo held back is not a photo
+    /// dropped, it is only settled again after the one ahead of it has landed.
+    static func identityKeys(of photo: LightroomPhoto) -> [String] {
+        var keys: [String] = []
+        if let sha = photo.originalSHA256 { keys.append("sha:\(sha)") }
+        if let fileName = photo.expectedPhotosFileName { keys.append("name:\(fileName.lowercased())") }
+        return keys
     }
 
     /// Stage two, run several at a time: download the photo, bring it to the chosen size, and

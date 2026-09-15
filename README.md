@@ -124,7 +124,7 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 - A photo becomes eligible once it has been in the shared album for at least the check interval, up to a limit of 15 minutes. That leaves you time to finish your first edits before the version is captured, without a long interval also becoming a long delay: checking once a day means looking once a day, not holding every new photo back for a day.
 - A photo edited within the last two minutes waits for the next check, so an edit in progress is not captured half done.
 - Once synced, a photo is recorded in a local ledger and is **never synced again**, however often it is edited later. Removing it from the Lightroom album or from Photos does not resync it.
-- If the same original (same file hash) appears twice in the album, it is imported once.
+- If the same photograph appears twice in the album, it is imported once. Two things say it is the same one: the same original file hash, and — for the assets Lightroom reports no hash for, or a different hash for each copy — the same original file name within a day of the same capture time, which is the match the Photos lookup makes against the library. Whichever answers, the second copy is recorded against the photo already in Photos rather than imported again.
 - Once a photo is eligible, and before downloading it, the app asks Photos whether it is already there. See [Using two Macs](#using-two-macs). The waiting rules are applied first, because that lookup searches the library around the photo's capture date and a photo that is not eligible yet would pay for one on every check until it was.
 - The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** checks immediately and ignores both delays.
@@ -151,7 +151,9 @@ Changing the size affects photos synced from then on. A photo already in the led
 
 Lightroom builds each full-size photo when it is asked for, so a check spends nearly all of its time waiting rather than working — on a large album, hours of it. **Fetch at once** (1–10, default 5) sets how many photos are downloaded in parallel, which overlaps that waiting. On a backlog it is close to a straight division: five at once finishes in about a fifth of the time.
 
-Only the fetching is parallel. Importing into Photos and writing the ledger stay strictly one at a time and in order, because Photos serializes its own changes anyway and the ledger is a single file rewritten whole — and because the duplicate checks read the ledger before acting on it, so running them in parallel could import the same original twice.
+Only the fetching is parallel. Importing into Photos and writing the ledger stay strictly one at a time and in order, because Photos serializes its own changes anyway and the ledger is a single file rewritten whole — and because the duplicate checks read the ledger before acting on it, so running them in parallel could import the same photograph twice.
+
+For the same reason, two photos that would answer each other's duplicate check are never fetched at the same time: the second waits for the first to land and is then checked against it. Both identities count here, the file hash and the file name, since the entry that answers either one — and the photo the Photos lookup would find — only exists once a fetch has been imported.
 
 Set it to 1 to turn the overlap off. Lower it if the log says Lightroom asked the app to wait before serving a photo: that means the share is being asked for more at once than it will give.
 
@@ -198,7 +200,7 @@ Two things this does not cover:
 - Run the app on one Mac at a time. Two Macs checking the same album within the same minute can both import the same photo before either one appears in the other's library.
 - Quitting mid-check is safe. Each photo is recorded as it is imported, so the next check carries on from there; part-finished downloads are thrown away and fetched again. A photo that reached Photos just before the app quit is found there by the next check and recorded without being downloaded again.
 
-A photo without a capture date is not looked up at all, since the search would have to scan the whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives.
+A photo without a capture date is not looked up at all, since the search would have to scan the whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives. The ledger makes the same name-and-capture-time match on its own record first, so a photograph this Mac has already synced is still caught when the library cannot be searched.
 
 ## Where things are kept
 

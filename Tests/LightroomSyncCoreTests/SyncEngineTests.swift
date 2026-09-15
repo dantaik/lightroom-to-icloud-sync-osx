@@ -465,6 +465,59 @@ extension SyncEngineTests {
         XCTAssertTrue(harness.sink.lines.contains { $0.contains("[warning]") && $0.contains("Could not check Photos") })
     }
 
+    /// Lightroom reports no `sha256` for some assets, so the same photograph added to the album a
+    /// second time looks new to the hash check. The file name and capture time are what say
+    /// otherwise — the very match the Photos lookup makes — and the ledger now makes it too,
+    /// before Photos is asked at all. That is what still holds when the library cannot be searched.
+    func testTheSamePhotographAddedAgainIsNotSyncedTwiceWithoutAHash() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "p1.jpg", added: old, edited: old),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+        let first = try await harness.engine.run(config(albumName: nil))
+        XCTAssertEqual(first.synced, 1)
+
+        // The same photograph, back as a second asset, and Photos cannot be searched this time.
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "p1.jpg", added: old, edited: old),
+            assetEntry(id: "p2", fileName: "p1.jpg", added: old, edited: old),
+        ]))
+        setDownload(harness, assetID: "p2", width: 4000, height: 3000)
+        harness.photoLibrary.error = NSError(domain: "Photos", code: 1, userInfo: [NSLocalizedDescriptionKey: "no access"])
+        harness.photoLibrary.queries.removeAll()
+
+        let second = try await harness.engine.run(config(albumName: nil))
+        XCTAssertEqual(second.duplicates, 1)
+        XCTAssertEqual(second.synced, 0)
+        XCTAssertEqual(harness.importer.requests.count, 1, "the photograph reached Photos once")
+        XCTAssertTrue(harness.photoLibrary.queries.isEmpty, "the ledger answered without searching the library")
+        XCTAssertEqual(harness.ledger.state.entries["p2"]?.photosLocalIdentifier,
+                       harness.ledger.state.entries["p1"]?.photosLocalIdentifier)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("already synced with the same capture time") })
+    }
+
+    /// Two photographs that merely share a camera file name are not one photograph. The capture
+    /// times are what tell them apart, and a day of slack is all the name match is given.
+    func testTwoPhotosSharingAFileNameFarApartInTimeAreBothSynced() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "p1.jpg", added: old, edited: old, captureDate: "2024-05-01T10:20:30"),
+            assetEntry(id: "p2", fileName: "p1.jpg", added: old, edited: old, captureDate: "2021-09-12T08:00:00"),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+        setDownload(harness, assetID: "p2", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config(albumName: nil))
+        XCTAssertEqual(report.synced, 2, "a shared file name three years apart is two photographs")
+        XCTAssertEqual(report.duplicates, 0)
+        XCTAssertEqual(harness.importer.requests.count, 2)
+    }
+
     func testPhotoWithoutACaptureDateIsNotLookedUp() async throws {
         let harness = try makeHarness()
         defer { try? FileManager.default.removeItem(at: harness.directory) }

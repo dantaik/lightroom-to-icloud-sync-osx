@@ -73,6 +73,24 @@ public final class Ledger {
         state.entries.values.first { $0.originalSHA256 == sha256 }
     }
 
+    /// A synced photo that is the same photograph as this one: the same original file name, and a
+    /// capture time within `tolerance` of it.
+    ///
+    /// This is the identity the Photos lookup searches the library on, kept in the ledger too.
+    /// Lightroom reports no `sha256` for some assets and a different one for each copy of others,
+    /// so the hash alone leaves the same photograph looking new; when it does, this is what
+    /// answers, without Photos having to be asked at all.
+    public func entry(withFileName fileName: String, captureDate: Date,
+                      tolerance: TimeInterval) -> LedgerEntry? {
+        state.entries.values.first { entry in
+            guard let name = entry.fileName,
+                  name.caseInsensitiveCompare(fileName) == .orderedSame,
+                  let date = entry.captureDate
+            else { return false }
+            return abs(date.timeIntervalSince(captureDate)) <= tolerance
+        }
+    }
+
     /// Records the first time a photo was observed. Returns the stored date (existing or new).
     @discardableResult
     public func noteSeen(assetID: String, at date: Date) throws -> Date {

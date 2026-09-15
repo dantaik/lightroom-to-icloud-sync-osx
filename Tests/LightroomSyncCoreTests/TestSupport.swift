@@ -83,7 +83,7 @@ final class FakeImporter: PhotoImporting {
         try? FileManager.default.removeItem(at: request.fileURL)
         identifiers += 1
         let identifier = "local-\(identifiers)"
-        library?.file(identifier, inAlbum: request.albumName)
+        library?.imported(identifier, request: request)
         return identifier
     }
 }
@@ -135,8 +135,13 @@ final class FakeMetadataWriter: PhotoMetadataWriting {
 
 /// Stands in for the Photos library: which assets it holds and which album each one is in.
 final class FakePhotoLibrary: PhotoLibraryAccess {
-    /// Local identifiers keyed by the file name the library is asked about.
+    /// Local identifiers keyed by the file name the library is asked about. Set up by a test to
+    /// say the library already held a photo before the pass; matched on the name alone.
     var identifiers: [String: String] = [:]
+    /// What importing put here, the way PhotoKit does: a photo is in the library from the moment
+    /// it is imported, and the next lookup finds it. Matched the way the real library is searched,
+    /// on the original file name and a capture date within the query's tolerance.
+    private(set) var importedAssets: [(fileName: String, captureDate: Date?, identifier: String)] = []
     /// Album name to the identifiers currently in it.
     var albums: [String: Set<String>] = [:]
     /// Assets the user has deleted from the library outright.
@@ -150,7 +155,12 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
     func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? {
         queries.append(query)
         if let error { throw error }
-        return identifiers[query.fileName]
+        if let identifier = identifiers[query.fileName] { return identifier }
+        return importedAssets.first { asset in
+            guard asset.fileName.caseInsensitiveCompare(query.fileName) == .orderedSame,
+                  let captureDate = asset.captureDate else { return false }
+            return abs(captureDate.timeIntervalSince(query.captureDate)) <= query.dateTolerance
+        }?.identifier
     }
 
     func albumExists(named name: String) async throws -> Bool {
@@ -165,6 +175,15 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
         let live = identifiers.filter { !deletedIdentifiers.contains($0) }
         albums[name, default: []].formUnion(live)
         return live
+    }
+
+    /// What PhotoKit does when a photo is imported: the library holds it from then on, under the
+    /// original file name and creation date it was imported with, and it is filed into the album.
+    func imported(_ identifier: String, request: PhotoImportRequest) {
+        if let fileName = request.originalFileName {
+            importedAssets.append((fileName, request.captureDate, identifier))
+        }
+        file(identifier, inAlbum: request.albumName)
     }
 
     /// What PhotoKit does when a photo is imported with an album name.
