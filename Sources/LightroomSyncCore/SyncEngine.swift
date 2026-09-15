@@ -114,12 +114,14 @@ public enum SyncEngineError: Error, LocalizedError, Equatable {
     case invalidShareLink(String)
     case noAlbums
     case albumNotFound(String)
+    case alreadyRunning
 
     public var errorDescription: String? {
         switch self {
         case .invalidShareLink(let detail): return detail
         case .noAlbums: return "This share contains no albums."
         case .albumNotFound(let id): return "The selected album (\(id)) is no longer part of this share."
+        case .alreadyRunning: return "A check is already running."
         }
     }
 }
@@ -132,9 +134,18 @@ public final class SyncEngine {
     private let photoLibrary: PhotoLibraryAccess
     private let resizer: PhotoResizing
     private let metadataWriter: PhotoMetadataWriting
+    private let localSource: LocalPhotoSource
     private let downloadDirectory: URL
     private let settleTime: TimeInterval
     private weak var sink: SyncEventSink?
+
+    /// Guards against a second pass starting on top of one already running.
+    ///
+    /// Two passes share this engine's ledger and its download directory, and starting up sweeps
+    /// that directory — which, with a pass already running, is its downloads, mid-flight. The app
+    /// has its own guard on top of this one; this is the one the ledger actually depends on.
+    private let runLock = NSLock()
+    private var isRunning = false
 
     /// How far a Photos asset's creation date may differ from Lightroom's capture date and still
     /// be the same photo. Lightroom reports capture times without a zone, so two Macs in different
@@ -145,6 +156,7 @@ public final class SyncEngine {
                 photoLibrary: PhotoLibraryAccess = NullPhotoLibraryAccess(),
                 resizer: PhotoResizing = NoPhotoResizing(),
                 metadataWriter: PhotoMetadataWriting = NoPhotoMetadataWriting(),
+                localSource: LocalPhotoSource = NoLocalPhotoSource(),
                 downloadDirectory: URL, settleTime: TimeInterval = SyncPolicy.defaultSettleTime,
                 sink: SyncEventSink?) {
         self.client = client
@@ -153,12 +165,15 @@ public final class SyncEngine {
         self.photoLibrary = photoLibrary
         self.resizer = resizer
         self.metadataWriter = metadataWriter
+        self.localSource = localSource
         self.downloadDirectory = downloadDirectory
         self.settleTime = settleTime
         self.sink = sink
     }
 
     public func run(_ config: SyncConfiguration, now: Date = Date()) async throws -> SyncReport {
+        guard beginRun() else { throw SyncEngineError.alreadyRunning }
+        defer { endRun() }
         let pass = Stopwatch()
         let link: AlbumShareLink
         do {
@@ -275,6 +290,19 @@ public final class SyncEngine {
         // above to be ranked by hand.
         if let diagnosis = report.timings.diagnosis { log(.info, diagnosis) }
         return report
+    }
+
+    /// Claims the engine for one pass, or reports that another already holds it.
+    private func beginRun() -> Bool {
+        runLock.withLock {
+            guard !isRunning else { return false }
+            isRunning = true
+            return true
+        }
+    }
+
+    private func endRun() {
+        runLock.withLock { isRunning = false }
     }
 
     // MARK: - The three stages
@@ -430,6 +458,14 @@ public final class SyncEngine {
 
         if downloaded.throttleWait > .zero {
             log(.warning, "\(name): Lightroom asked for \(Stopwatch.describe(downloaded.throttleWait)) of waiting before it would serve this photo. Lower “Fetch at once” if this keeps happening.")
+        }
+        // Worth saying out loud even though it succeeded: a pass full of these is a network that
+        // cannot hold a transfer open for as long as a full-size render takes, and the answer to
+        // that is a smaller photo size or fewer at once, not more retries.
+        if downloaded.transportRetries > 0 {
+            let restart = downloaded.resumed ? "picked up where it stopped" : "started again"
+            log(.warning, "\(name): the connection failed \(downloaded.transportRetries) time(s); the download was \(restart)"
+                + " after \(Stopwatch.describe(downloaded.retryWait)) of waiting.")
         }
 
         // From here a file exists, so every way out has to account for it. Being cancelled with
@@ -590,6 +626,9 @@ public final class SyncEngine {
     /// larger. Any bigger size has to come from the download host and is shrunk afterwards.
     /// A rendition that cannot be fetched is not a failure; the full-size download still works.
     private func download(_ photo: LightroomPhoto, shareID: String, size: PhotoSize, name: String) async throws -> DownloadedPhoto {
+        // Lightroom's own library on this Mac first: a file it has already rendered costs no
+        // download at all, and the fastest photo is the one Adobe is never asked for.
+        if let local = await localFile(for: photo, size: size, name: name) { return local }
         if let type = size.renditionType, let href = photo.renditionHref(forType: type) {
             do {
                 return try await client.downloadRendition(shareID: shareID, assetID: photo.assetID,
@@ -599,6 +638,38 @@ public final class SyncEngine {
             }
         }
         return try await client.downloadFullSize(shareID: shareID, assetID: photo.assetID, to: downloadDirectory)
+    }
+
+    /// Lightroom's copy of this photo on this Mac, when there is one fit to import.
+    ///
+    /// Three things have to hold before a local file is used, and a no to any of them means the
+    /// photo is downloaded as usual — never an error, and never a silently worse photo:
+    ///
+    /// 1. A size was asked for. "Original" means every pixel Lightroom renders, and nothing on
+    ///    disk can promise to be that.
+    /// 2. The file is at least as large as the size asked for. A preview that falls short would
+    ///    put a smaller photo into Photos than the settings call for, and the ledger would record
+    ///    it as done at that size forever.
+    /// 3. It was rendered after the last edit. Lightroom on this Mac can be behind the cloud —
+    ///    an edit made on a phone reaches Adobe before it reaches here — and an older preview is
+    ///    a picture of an older version of the photo.
+    private func localFile(for photo: LightroomPhoto, size: PhotoSize, name: String) async -> DownloadedPhoto? {
+        guard let wanted = size.maxLongEdge else { return nil }
+        do {
+            guard let file = try await localSource.localFile(for: photo, minimumLongEdge: wanted,
+                                                            to: downloadDirectory) else { return nil }
+            if let edited = photo.lastEditedAt, let rendered = file.renderedAt, rendered < edited {
+                try? FileManager.default.removeItem(at: file.fileURL)
+                log(.info, "\(name): Lightroom's copy on this Mac predates the last edit, so it was downloaded instead")
+                return nil
+            }
+            log(.info, "\(name): taken from Lightroom's library on this Mac (\(file.source)) — nothing downloaded")
+            return DownloadedPhoto(fileURL: file.fileURL, fileName: file.fileName,
+                                   contentType: file.contentType, byteCount: file.byteCount)
+        } catch {
+            log(.warning, "\(name): could not read Lightroom's local copy (\(error.localizedDescription)); downloading it instead")
+            return nil
+        }
     }
 
     /// Brings a photo that came back larger than the chosen size down to it, and returns the file

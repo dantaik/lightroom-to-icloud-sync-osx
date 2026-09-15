@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "LightroomSync", targets: ["LightroomSync"]),
         .executable(name: "lrsync-check", targets: ["lrsync-check"]),
+        .executable(name: "lrsync-local", targets: ["lrsync-local"]),
         .library(name: "LightroomSyncCore", targets: ["LightroomSyncCore"]),
     ],
     dependencies: [
@@ -22,6 +23,9 @@ let package = Package(
         .executableTarget(name: "LightroomSync", dependencies: ["LightroomSyncCore"]),
         // Command-line diagnostics: inspect a share link and optionally download its photos.
         .executableTarget(name: "lrsync-check", dependencies: ["LightroomSyncCore"]),
+        // Command-line diagnostics: report what Lightroom's library on this Mac holds, and which
+        // photo sizes it could serve without downloading.
+        .executableTarget(name: "lrsync-local", dependencies: ["LightroomSyncCore"]),
         .testTarget(
             name: "LightroomSyncCoreTests",
             dependencies: ["LightroomSyncCore"],

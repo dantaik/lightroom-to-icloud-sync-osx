@@ -161,6 +161,28 @@ For the same reason, two photos that would answer each other's duplicate check a
 
 Set it to 1 to turn the overlap off. Lower it if the log says Lightroom asked the app to wait before serving a photo: that means the share is being asked for more at once than it will give.
 
+### When a download fails
+
+Lightroom renders each full-size photo on demand, so a download can be minutes of work held open on one connection — and connections die. A Wi-Fi handover, a VPN reconnecting or a router dropping a long-lived transfer all end it the same way, with `The network connection was lost.` and nothing served.
+
+A failure like that is worth another go, so the app takes one: up to four, waiting 5 s, 20 s, 60 s and 120 s, which rides out an outage of about three and a half minutes. Where the download host supports ranged requests the transfer picks up where it stopped; where it does not, it starts again — either way Adobe's render is worth far more than the waiting. The log says when this happened, and a pass full of those lines means the connection cannot hold a transfer open for as long as a full-size render takes: fetch fewer at once, or choose a smaller size.
+
+Failures that would happen again the same way — a refused request, a malformed URL — are not retried, and neither is a check you stopped yourself. Adobe answering "slow down" (HTTP 429 or 503) is a separate thing, handled by its own shorter wait.
+
+### Using Lightroom's local library
+
+On the Mac Lightroom itself runs on, some of what the app would download has already been rendered and is sitting in `~/Pictures/Lightroom Library.lrlibrary`. The sync engine will prefer such a file over a download, under three rules — a no to any of them means the photo is downloaded as usual:
+
+1. **A capped size was asked for.** *Original* means every pixel Lightroom renders, which no cached file can promise to be.
+2. **The cached render covers that size.** A preview that falls short would put a smaller photo into Photos than the settings call for — and the ledger records it as done at that size for good.
+3. **It was rendered after the last edit.** Lightroom on this Mac can be behind the cloud, and an older preview is a picture of an older version of the photo.
+
+**Originals are never substituted**, however many are stored locally. Lightroom's edits are Camera Raw develop settings rather than pixels, and applying them needs Adobe's rendering engine. An original would land in Photos looking nothing like the photo in Lightroom, which is the one thing this app exists to avoid.
+
+That leaves the previews, and how large they are decides whether any of this helps. Run [`lrsync-local`](#lrsync-local) to see: it prints the largest render your library holds and which sizes that covers. Lightroom builds previews for the screen, so on most libraries the answer is *Small* and nothing above it — at the default 6016 px every photo is still downloaded.
+
+**Status.** The rules above, and the engine's preference for a local file, are implemented and tested. What is not yet written is the piece that finds a specific photo inside the library: the app reads a shared album over the network and knows each photo by its Adobe asset ID, and nothing yet maps that ID to a file on disk. Until it does, the app ships with no local source and downloads everything, exactly as before. `lrsync-local` prints sample file names from your library precisely so that lookup can be written against a real layout rather than a guess.
+
 ### The content hash
 
 Lightroom's own `sha256` is the hash of the original *as it was imported*, and it arrives in the album listing — which is what makes it worth having: a duplicate it recognizes costs nothing, because nothing has been downloaded yet. But it is not always there, and not always the same for two copies of one photograph.
@@ -262,6 +284,17 @@ swift run lrsync-check "https://adobe.ly/xxxxxxx" ~/Desktop/lightroom-test
 
 It reports each photo's size, whether Lightroom holds edits for it, and the name the app would look for in Photos. Use it when a share link does not behave as expected.
 
+#### lrsync-local
+
+`lrsync-local` reports what Lightroom's own library on this Mac holds, and which photo sizes it could serve without downloading:
+
+```sh
+swift run lrsync-local                                   # ~/Pictures/Lightroom Library.lrlibrary
+swift run lrsync-local "/path/to/Lightroom Library.lrlibrary"
+```
+
+It reads only, and never touches Photos or the network. See [Using Lightroom's local library](#using-lightrooms-local-library) for what the answer means.
+
 ## How it works
 
 Adobe's official Lightroom API is not usable for this: the Firefly Services "Lightroom API" reached end of life on July 31, 2026, and the older partner catalog API is invitation-only with full-size renditions gated behind a scope Adobe grants by hand. Lightroom desktop has no plugin, AppleScript or Shortcuts support either. See [docs/research.md](docs/research.md) for the details and sources.
@@ -291,6 +324,7 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 - **Sharing by link means anyone with the link can view and download the album.** The link is unguessable, but treat it as a secret. Invite-only shares cannot be read without an Adobe login.
 - Photos synced to Adobe's cloud from Lightroom Classic exist there only as smart previews, so they arrive at 2048 px on the long edge whatever size you choose. The log says when that happens.
 - You get a rendered JPEG, not the RAW original. Videos and Live Photos are skipped.
+- Lightroom's library on this Mac can only save a download where its own renders are large enough, which is usually *Small* and nothing above it. Its originals never can: the edits are not in them. The lookup from a shared album's asset ID to a file in that library is not written yet, so nothing is served from it today. See [Using Lightroom's local library](#using-lightrooms-local-library).
 - Photos can be given a date, a place and a favourite flag through PhotoKit, and nothing else. A title or a keyword can only travel inside the file, where Photos does not show it.
 - A photo synced at one size is never synced again at another; the ledger has already recorded it.
 - The app polls with one small JSON request per interval, and only contacts the download host for new photos. The default is every 15 minutes; the control accepts up to 240 minutes, 48 hours or 30 days.
@@ -304,7 +338,8 @@ Sources/LightroomSyncCore    platform-independent logic: share-link parsing, gal
                              sync policy and settings, ledger, engine. Builds and tests on Linux too.
 Sources/LightroomSync        the macOS menu bar app (SwiftUI MenuBarExtra + PhotoKit,
                              ImageIO for scaling photos down and for writing their metadata)
-Sources/lrsync-check         command-line diagnostics
+Sources/lrsync-check         command-line diagnostics for a share link
+Sources/lrsync-local         command-line report on Lightroom's library on this Mac
 Tests/LightroomSyncCoreTests unit tests, with captured (anonymized) gallery responses as fixtures
 Resources/AppIcon.icns       the app icon, generated by scripts/make-icon.py
 scripts/                     Info.plist, the .app bundling script, the test runner, the icon generator

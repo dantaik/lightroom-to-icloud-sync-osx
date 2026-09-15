@@ -65,6 +65,11 @@ public struct SyncSettings: Equatable, Codable {
     public static let defaultDownloadConcurrency = 5
     /// 1 turns the overlap off, which is how the app behaved before it existed. The top is a
     /// limit on what these undocumented endpoints are asked to do at once, not a target.
+    ///
+    /// ``URLSessionTransport`` opens its connection limit to the top of this range. URLSession's
+    /// own default is 6, which quietly queued anything asked for beyond the sixth: those photos
+    /// sat waiting for a connection with their timing clock already running, so the log showed
+    /// them as slow downloads rather than as photos that had not started.
     public static let downloadConcurrencyRange = 1...10
 
     public static func clamp(downloadConcurrency value: Int) -> Int {

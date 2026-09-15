@@ -89,6 +89,42 @@ final class FakeTransport: HTTPTransport {
     }
 }
 
+/// A transport whose downloads fail a set number of times before serving, the way a connection
+/// dropping under a long transfer does. Records the resume data it was handed on each attempt,
+/// so a test can tell a resumed transfer from one started over.
+final class FlakyTransport: HTTPTransport {
+    /// Thrown in order, one per download attempt, before the canned response is served.
+    var failures: [Error] = []
+    /// Handed back on the attempt after each failure, standing in for a server that supports
+    /// ranged requests. Nil means it does not, and the retry starts the transfer over.
+    var resumeData: Data?
+    var canned = FakeTransport.Canned()
+    /// The `resuming:` argument of every download attempt, in order.
+    private(set) var resumeArguments: [Data?] = []
+    private let lock = NSLock()
+
+    func get(_ url: URL, headers: [String: String]) async throws -> HTTPResponse {
+        HTTPResponse(status: canned.status, headers: canned.headers, body: canned.body, finalURL: url)
+    }
+
+    func download(_ url: URL, headers: [String: String], to fileURL: URL, resuming: Data?) async throws -> HTTPFileResponse {
+        let failure: Error? = lock.withLock {
+            resumeArguments.append(resuming)
+            return failures.isEmpty ? nil : failures.removeFirst()
+        }
+        if let failure { throw ResumableDownloadError(underlying: failure, resumeData: resumeData) }
+        var lowered: [String: String] = [:]
+        for (key, value) in canned.headers { lowered[key.lowercased()] = value }
+        guard canned.status == 200 else {
+            return HTTPFileResponse(status: canned.status, headers: lowered, fileURL: nil,
+                                    byteCount: 0, finalURL: url)
+        }
+        try canned.body.write(to: fileURL, options: .atomic)
+        return HTTPFileResponse(status: canned.status, headers: lowered, fileURL: fileURL,
+                                byteCount: canned.body.count, finalURL: url, resumed: resuming != nil)
+    }
+}
+
 final class FakeImporter: PhotoImporting {
     var requests: [PhotoImportRequest] = []
     var failNext = false
@@ -283,4 +319,39 @@ func assetEntry(id: String, fileName: String, sha: String? = nil, added: Date, e
         "payload": ["userCreated": iso(added), "userUpdated": iso(edited ?? added)],
         "asset": asset,
     ]
+}
+
+/// Stands in for Lightroom's library on this Mac: serves a canned file for whichever assets the
+/// test says it holds, and records what it was asked for.
+final class FakeLocalSource: LocalPhotoSource {
+    struct Held {
+        var longEdge: Int
+        var renderedAt: Date?
+        var fileName: String?
+        var contentType: String = "image/jpeg"
+        var source: String = "preview"
+    }
+
+    /// Asset IDs this library has a rendered, edited copy of.
+    var held: [String: Held] = [:]
+    var error: Error?
+    /// Every (assetID, minimumLongEdge) it was asked about, in order.
+    private(set) var requests: [(assetID: String, minimumLongEdge: Int)] = []
+    private let lock = NSLock()
+
+    func localFile(for photo: LightroomPhoto, minimumLongEdge: Int, to directory: URL) async throws -> LocalPhotoFile? {
+        lock.withLock { requests.append((photo.assetID, minimumLongEdge)) }
+        if let error { throw error }
+        guard let held = held[photo.assetID] else { return nil }
+        // The real library serves what it has; deciding whether that is big enough is the
+        // engine's job, so this deliberately does not filter on the size it was asked for.
+        guard held.longEdge >= minimumLongEdge else { return nil }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("\(photo.assetID)-local.jpg")
+        let body = fakeJPEG(width: held.longEdge, height: held.longEdge * 2 / 3, picture: photo.assetID)
+        try body.write(to: fileURL, options: .atomic)
+        return LocalPhotoFile(fileURL: fileURL, fileName: held.fileName ?? photo.fileName,
+                              contentType: held.contentType, byteCount: body.count,
+                              longEdge: held.longEdge, renderedAt: held.renderedAt, source: held.source)
+    }
 }

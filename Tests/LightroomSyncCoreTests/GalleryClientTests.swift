@@ -115,6 +115,112 @@ final class GalleryClientTests: XCTestCase {
         }
     }
 
+    // MARK: - Surviving a connection that dies mid-download
+
+    /// A backoff short enough that a test waiting it out costs nothing.
+    private static let instantBackoff: [Duration] = [.milliseconds(1), .milliseconds(1), .milliseconds(1)]
+
+    private func flakyClient(_ transport: FlakyTransport, picture: String = "p") -> LightroomGalleryClient {
+        transport.canned = FakeTransport.Canned(
+            status: 200,
+            headers: ["Content-Type": "image/jpeg", "Content-Disposition": "attachment; filename=\"L1002205.DNG\""],
+            body: fakeJPEG(width: 6016, height: 4016, picture: picture))
+        return LightroomGalleryClient(transport: transport, transportBackoff: Self.instantBackoff)
+    }
+
+    func testRetriesAfterTheConnectionIsLost() async throws {
+        let transport = FlakyTransport()
+        // What a real pass saw: the connection gone twice, then the same file served normally.
+        transport.failures = [URLError(.networkConnectionLost), URLError(.networkConnectionLost)]
+        let client = flakyClient(transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let downloaded = try await client.downloadFullSize(shareID: share, assetID: "a1", to: directory)
+        XCTAssertEqual(downloaded.transportRetries, 2)
+        XCTAssertEqual(downloaded.fileName, "L1002205.DNG")
+        XCTAssertEqual(downloaded.fileURL.lastPathComponent, "a1.jpg")
+        XCTAssertTrue(downloaded.retryWait > .zero)
+        XCTAssertEqual(JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL),
+                       JPEGInfo.PixelSize(width: 6016, height: 4016))
+    }
+
+    func testResumesFromResumeDataWhenTheServerOffersIt() async throws {
+        let transport = FlakyTransport()
+        transport.failures = [URLError(.networkConnectionLost)]
+        transport.resumeData = Data("partial".utf8)
+        let client = flakyClient(transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let downloaded = try await client.downloadFullSize(shareID: share, assetID: "a1", to: directory)
+        XCTAssertTrue(downloaded.resumed)
+        // First attempt from scratch, second handed what the failure left behind.
+        XCTAssertEqual(transport.resumeArguments, [nil, Data("partial".utf8)])
+    }
+
+    func testStartsOverWhenTheServerCannotResume() async throws {
+        let transport = FlakyTransport()
+        transport.failures = [URLError(.networkConnectionLost)]
+        transport.resumeData = nil
+        let client = flakyClient(transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let downloaded = try await client.downloadFullSize(shareID: share, assetID: "a1", to: directory)
+        XCTAssertFalse(downloaded.resumed)
+        XCTAssertEqual(downloaded.transportRetries, 1)
+        XCTAssertEqual(transport.resumeArguments, [nil, nil])
+    }
+
+    func testGivesUpOnceTheBackoffIsSpent() async throws {
+        let transport = FlakyTransport()
+        transport.failures = Array(repeating: URLError(.networkConnectionLost), count: 10)
+        let client = flakyClient(transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try await client.downloadFullSize(shareID: share, assetID: "a1", to: directory)
+            XCTFail("expected the download to give up")
+        } catch let error as URLError {
+            // The wrapper carrying resume data is an implementation detail; what reaches the log
+            // is the reason the connection failed.
+            XCTAssertEqual(error.code, .networkConnectionLost)
+        }
+        // One attempt, then one per rung of the ladder.
+        XCTAssertEqual(transport.resumeArguments.count, Self.instantBackoff.count + 1)
+    }
+
+    func testDoesNotRetryAnErrorThatWouldFailTheSameWayAgain() async throws {
+        let transport = FlakyTransport()
+        transport.failures = [URLError(.badURL), URLError(.badURL)]
+        let client = flakyClient(transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        do {
+            _ = try await client.downloadFullSize(shareID: share, assetID: "a1", to: directory)
+            XCTFail("expected the download to fail")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .badURL)
+        }
+        XCTAssertEqual(transport.resumeArguments.count, 1, "a bad URL is not worth a second attempt")
+    }
+
+    func testRetryableErrors() {
+        XCTAssertTrue(LightroomGalleryClient.isRetryable(URLError(.networkConnectionLost)))
+        XCTAssertTrue(LightroomGalleryClient.isRetryable(URLError(.timedOut)))
+        XCTAssertTrue(LightroomGalleryClient.isRetryable(URLError(.notConnectedToInternet)))
+        XCTAssertTrue(LightroomGalleryClient.isRetryable(URLError(.cannotConnectToHost)))
+        XCTAssertFalse(LightroomGalleryClient.isRetryable(URLError(.badURL)))
+        XCTAssertFalse(LightroomGalleryClient.isRetryable(URLError(.unsupportedURL)))
+        // The app stopping the pass, which retrying would only draw out.
+        XCTAssertFalse(LightroomGalleryClient.isRetryable(URLError(.cancelled)))
+        XCTAssertFalse(LightroomGalleryClient.isRetryable(CancellationError()))
+        XCTAssertFalse(LightroomGalleryClient.isRetryable(LightroomError.downloadsDisabled))
+    }
+
     func testContentDispositionParsing() {
         XCTAssertEqual(LightroomGalleryClient.fileName(fromContentDisposition: "attachment; filename*=utf-8''I%20-%20Jan.jpg"), "I - Jan.jpg")
         XCTAssertEqual(LightroomGalleryClient.fileName(fromContentDisposition: "attachment; filename=\"DSC_3920.jpg\""), "DSC_3920.jpg")

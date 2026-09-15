@@ -278,9 +278,17 @@ final class AppModel: ObservableObject {
         guard canSave else { return }
         let settings = editor.save()
         store.save(settings)
-        // Check promptly with the new settings rather than waiting out the old interval.
-        lastAttemptAt = nil
-        phase = .idle
+        // Check promptly with the new settings rather than waiting out the old interval — but
+        // never while a pass is running. `isSyncing` reads `phase`, so clearing it mid-pass told
+        // `tick` there was nothing in flight, and `lastAttemptAt` told it no check had been made:
+        // within twenty seconds a second pass started on top of the first, sharing one ledger and
+        // one download directory, and sweeping that directory is the first thing a pass does. A
+        // pass already running keeps the settings it started with and picks up the new ones on
+        // its next scheduled check, which is what saving mid-pass has always meant.
+        if !isSyncing {
+            lastAttemptAt = nil
+            phase = .idle
+        }
         let description = settings.isConfigured ? "saved" : "cleared"
         bridge.log(.info, "Settings \(description): every \(settings.intervalDescription)"
             + ", photos at \(settings.photoSize.shortDescription)"
