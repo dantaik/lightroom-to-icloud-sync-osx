@@ -12,6 +12,7 @@ struct MenuPanel: View {
             header
             Divider()
             settings
+            saveBar
             Divider()
             activity
             Divider()
@@ -43,7 +44,8 @@ struct MenuPanel: View {
                 Text("Lightroom album share link")
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
-                TextField("https://adobe.ly/… or https://lightroom.adobe.com/shares/…", text: $model.shareLink)
+                TextField("https://adobe.ly/… or https://lightroom.adobe.com/shares/…",
+                          text: $model.editor.draft.shareLink)
                     .textFieldStyle(.roundedBorder)
                 if !model.shareStatus.isEmpty {
                     Text(model.shareStatus)
@@ -51,9 +53,10 @@ struct MenuPanel: View {
                         .foregroundStyle(model.shareStatusIsError ? Color.red : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if let info = model.shareInfo, info.albums.count > 1 {
-                    Picker("Album", selection: $model.selectedAlbumID) {
-                        ForEach(info.albums) { album in
+                if model.availableAlbums.count > 1 {
+                    Picker("Album", selection: $model.editor.draft.albumID) {
+                        Text("First album").tag(nil as String?)
+                        ForEach(model.availableAlbums) { album in
                             Text(album.name).tag(Optional(album.id))
                         }
                     }
@@ -64,12 +67,13 @@ struct MenuPanel: View {
                 Text("Photos album (optional)")
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
-                TextField("Leave empty to add photos to the library only", text: $model.photosAlbumName)
+                TextField("Leave empty to add photos to the library only",
+                          text: $model.editor.draft.photosAlbumName)
                     .textFieldStyle(.roundedBorder)
             }
 
-            Stepper(value: $model.intervalMinutes, in: 1...1440) {
-                Text("Check every \(model.intervalMinutes) min")
+            Stepper(value: $model.editor.draft.intervalMinutes, in: SyncSettings.intervalRange) {
+                Text("Check every \(model.editor.draft.intervalMinutes) min")
             }
             Text("New photos sync once they have been in the album for at least this long.")
                 .font(.caption)
@@ -80,6 +84,25 @@ struct MenuPanel: View {
                 get: { model.launchAtLogin },
                 set: { model.setLaunchAtLogin($0) }
             ))
+        }
+    }
+
+    private var saveBar: some View {
+        HStack(spacing: 8) {
+            Button("Save") { model.save() }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!model.canSave)
+                .help("Checks run on the saved settings only.")
+            if model.hasUnsavedChanges {
+                Button("Revert") { model.revert() }
+                Text("Unsaved changes")
+                    .font(.caption)
+                    .foregroundStyle(Color.orange)
+            } else if model.hasSavedSettings {
+                Text("Settings saved")
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
         }
     }
 
@@ -107,7 +130,7 @@ struct MenuPanel: View {
         HStack {
             Button(model.isSyncing ? "Syncing…" : "Sync now") { model.syncNow() }
                 .disabled(!model.canSync)
-                .help("Checks the album immediately and syncs new photos without waiting for the delay.")
+                .help(model.syncNowHelp)
             Button("Open log") { model.openLog() }
             Spacer()
             Button("Quit") { model.quit() }

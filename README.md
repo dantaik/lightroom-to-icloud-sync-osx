@@ -17,15 +17,26 @@ No Adobe developer account, no Lightroom Classic, no Adobe API key. It uses the 
 
 1. **Share the album from Lightroom.** In Lightroom (desktop, web or mobile) open the album, choose *Share & Invite*, set *Link access* to **Anyone can view**, and under *Link settings* turn on **Allow downloads**. Copy the link (it looks like `https://adobe.ly/…` or `https://lightroom.adobe.com/shares/…`).
 2. **Build and install the app** (see below), then open it. It appears as a photo icon in the menu bar.
-3. Click the icon and paste the link into *Lightroom album share link*. The panel confirms the album name and that downloads are allowed.
+3. Click the icon and paste the link into *Lightroom album share link*.
 4. Optionally type a **Photos album** name. The app creates it if needed and adds every synced photo to it. Leave it empty to add photos to the library only.
 5. Set **Check every N min** and, if you like, **Start at login**.
-
-Settings take effect as you type them, but a scheduled check never starts until you have left them
-alone for a few seconds, so a check cannot run against a half-typed album name. **Sync now** always
-uses what is on screen.
+6. Press **Save**. The panel then reads the album and confirms its name and that downloads are allowed.
 
 That's it. The app checks the album on that interval and on every launch.
+
+### Saved settings are the only settings
+
+Nothing happens until you press Save, and nothing ever runs against what you are still typing:
+
+- The panel edits a draft. Scheduled checks, **Sync now**, and the reading of the share link all use
+  the **saved** settings, never the draft.
+- While there are unsaved edits the panel says so, **Sync now** is disabled, and scheduled checks do
+  not start. Press **Save** to apply them, or **Revert** to go back to what is saved.
+- Saving also schedules the next check right away, rather than waiting out the old interval.
+- Clearing the share link and saving stops the checks altogether.
+- **Start at login** is a system setting and takes effect when you click it, not on Save.
+
+Before the first Save the app does nothing at all: no checks, and no requests to Adobe.
 
 ### Sync rules
 

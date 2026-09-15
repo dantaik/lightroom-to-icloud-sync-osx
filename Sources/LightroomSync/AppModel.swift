@@ -26,6 +26,37 @@ private final class EventBridge: SyncEventSink {
     }
 }
 
+/// Saved settings live in UserDefaults, under the keys the first version used.
+private struct UserDefaultsSettingsStore: SyncSettingsStore {
+    private enum Keys {
+        static let shareLink = "shareLink"
+        static let albumID = "selectedAlbumID"
+        static let photosAlbum = "photosAlbumName"
+        static let interval = "intervalMinutes"
+    }
+
+    let defaults: UserDefaults
+
+    func load() -> SyncSettings? {
+        // No share link key at all means the user has never saved anything.
+        guard let shareLink = defaults.string(forKey: Keys.shareLink) else { return nil }
+        let interval = defaults.integer(forKey: Keys.interval)
+        return SyncSettings(
+            shareLink: shareLink,
+            albumID: defaults.string(forKey: Keys.albumID),
+            photosAlbumName: defaults.string(forKey: Keys.photosAlbum) ?? "",
+            intervalMinutes: interval > 0 ? interval : SyncSettings.defaultIntervalMinutes
+        ).normalized
+    }
+
+    func save(_ settings: SyncSettings) {
+        defaults.set(settings.shareLink, forKey: Keys.shareLink)
+        defaults.set(settings.albumID, forKey: Keys.albumID)
+        defaults.set(settings.photosAlbumName, forKey: Keys.photosAlbum)
+        defaults.set(settings.intervalMinutes, forKey: Keys.interval)
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
@@ -34,48 +65,8 @@ final class AppModel: ObservableObject {
         case failed(String)
     }
 
-    private enum Keys {
-        static let shareLink = "shareLink"
-        static let albumID = "selectedAlbumID"
-        static let photosAlbum = "photosAlbumName"
-        static let interval = "intervalMinutes"
-    }
-
-    // MARK: Settings (persisted in UserDefaults)
-
-    @Published var shareLink: String {
-        didSet {
-            guard shareLink != oldValue else { return }
-            defaults.set(shareLink, forKey: Keys.shareLink)
-            settingsChanged()
-            scheduleShareValidation()
-        }
-    }
-
-    @Published var selectedAlbumID: String? {
-        didSet {
-            guard selectedAlbumID != oldValue else { return }
-            defaults.set(selectedAlbumID, forKey: Keys.albumID)
-            settingsChanged()
-        }
-    }
-
-    @Published var photosAlbumName: String {
-        didSet {
-            guard photosAlbumName != oldValue else { return }
-            defaults.set(photosAlbumName, forKey: Keys.photosAlbum)
-            settingsChanged()
-        }
-    }
-
-    @Published var intervalMinutes: Int {
-        didSet {
-            guard intervalMinutes != oldValue else { return }
-            defaults.set(intervalMinutes, forKey: Keys.interval)
-            settingsChanged()
-        }
-    }
-
+    /// The settings being edited. Only `editor.saved` drives syncing.
+    @Published var editor: SyncSettingsEditor
     @Published private(set) var launchAtLogin = false
 
     // MARK: Runtime state
@@ -92,7 +83,7 @@ final class AppModel: ObservableObject {
 
     let logFileURL: URL
 
-    private let defaults = UserDefaults.standard
+    private let store: SyncSettingsStore
     private let client: LightroomGalleryClient
     private let fileLog: FileLog
     private let bridge: EventBridge
@@ -101,18 +92,15 @@ final class AppModel: ObservableObject {
     private var loopTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
     private var lastAttemptAt: Date?
-    private var lastSettingsChangeAt: Date?
 
     init() {
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
         let support = library.appendingPathComponent("Application Support/LightroomSync", isDirectory: true)
         logFileURL = library.appendingPathComponent("Logs/LightroomSync/sync.log")
 
-        shareLink = defaults.string(forKey: Keys.shareLink) ?? ""
-        selectedAlbumID = defaults.string(forKey: Keys.albumID)
-        photosAlbumName = defaults.string(forKey: Keys.photosAlbum) ?? ""
-        let storedInterval = defaults.integer(forKey: Keys.interval)
-        intervalMinutes = storedInterval > 0 ? min(storedInterval, 1440) : 15
+        let store = UserDefaultsSettingsStore(defaults: .standard)
+        self.store = store
+        editor = SyncSettingsEditor(saved: store.load())
 
         client = LightroomGalleryClient(transport: URLSessionTransport())
         fileLog = FileLog(fileURL: logFileURL)
@@ -134,7 +122,7 @@ final class AppModel: ObservableObject {
 
         launchAtLogin = LoginItem.isEnabled
         fileLog.append("Lightroom Sync started")
-        scheduleShareValidation(delay: 0)
+        validateSavedLink()
         startLoop()
     }
 
@@ -145,8 +133,19 @@ final class AppModel: ObservableObject {
         return false
     }
 
-    var canSync: Bool {
-        engine != nil && !isSyncing && !shareLink.trimmingCharacters(in: .whitespaces).isEmpty
+    var hasUnsavedChanges: Bool { editor.hasUnsavedChanges }
+
+    var hasSavedSettings: Bool { editor.saved?.isConfigured == true }
+
+    var canSave: Bool { hasUnsavedChanges }
+
+    /// "Sync now" runs the saved settings, so it waits for unsaved edits to be saved or reverted.
+    var canSync: Bool { engine != nil && !isSyncing && editor.isReadyToSync }
+
+    var syncNowHelp: String {
+        if hasUnsavedChanges { return "Save the settings first. Checks always run on the saved settings." }
+        if !hasSavedSettings { return "Enter the album's share link and press Save." }
+        return "Check the album now and sync new photos without waiting for the delay."
     }
 
     var menuSymbol: String {
@@ -165,6 +164,7 @@ final class AppModel: ObservableObject {
         case .failed(let message):
             return "Last check failed: \(message)"
         case .idle:
+            guard hasSavedSettings else { return "Not set up yet. Paste the share link and press Save." }
             var parts: [String] = []
             if let lastSyncAt {
                 parts.append("Last check \(Self.timeFormatter.string(from: lastSyncAt))")
@@ -179,9 +179,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Albums to choose between, once the saved link has been read.
+    var availableAlbums: [AlbumInfo] { shareInfo?.albums ?? [] }
+
     // MARK: Actions
 
+    func save() {
+        guard canSave else { return }
+        let settings = editor.save()
+        store.save(settings)
+        // Check promptly with the new settings rather than waiting out the old interval.
+        lastAttemptAt = nil
+        phase = .idle
+        let description = settings.isConfigured ? "saved" : "cleared"
+        bridge.log(.info, "Settings \(description): every \(settings.intervalMinutes) min"
+            + (settings.photosAlbumName.isEmpty ? ", no Photos album" : ", Photos album “\(settings.photosAlbumName)”"))
+        validateSavedLink()
+    }
+
+    func revert() {
+        editor.revert()
+        validateSavedLink()
+    }
+
     func syncNow() {
+        guard canSync else { return }
         Task { await runSync(ignoreDelays: true) }
     }
 
@@ -219,48 +241,39 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Share link validation
+    // MARK: Reading the saved share link
 
-    private func scheduleShareValidation(delay: TimeInterval = 0.8) {
+    /// Reads the saved link, never the draft: typing in the panel contacts nothing.
+    private func validateSavedLink() {
         validationTask?.cancel()
-        let link = shareLink
-        validationTask = Task { [weak self] in
-            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-            guard !Task.isCancelled, let self else { return }
-            await self.validate(link: link)
-        }
-    }
-
-    private func validate(link: String) async {
-        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard let settings = editor.saved, settings.isConfigured else {
             shareInfo = nil
-            shareStatus = "Paste the album's share link from Lightroom (Share & Invite › Link)."
+            shareStatus = "Paste the album's share link from Lightroom (Share & Invite › Link), then press Save."
             shareStatusIsError = false
             return
         }
-        let parsed: AlbumShareLink
-        do {
-            parsed = try AlbumShareLink.parse(trimmed)
-        } catch {
-            shareInfo = nil
-            shareStatus = error.localizedDescription
-            shareStatusIsError = true
-            return
-        }
-        shareStatus = "Checking link…"
+        shareStatus = "Reading the album…"
         shareStatusIsError = false
+        validationTask = Task { [weak self] in
+            await self?.readShare(settings)
+        }
+    }
+
+    private func readShare(_ settings: SyncSettings) async {
         do {
-            let (shareID, linkAlbumID) = try await client.resolve(parsed)
+            let link = try AlbumShareLink.parse(settings.shareLink)
+            let (shareID, linkAlbumID) = try await client.resolve(link)
             let info = try await client.fetchShare(shareID: shareID)
-            guard !Task.isCancelled, shareLink.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+            guard !Task.isCancelled, editor.saved?.shareLink == settings.shareLink else { return }
             shareInfo = info
-            if let selected = selectedAlbumID, info.albums.contains(where: { $0.id == selected }) {
-                // keep the user's choice
-            } else {
-                selectedAlbumID = linkAlbumID ?? info.albums.first?.id
-            }
-            let albumName = info.albums.first(where: { $0.id == selectedAlbumID })?.name
+
+            // Never write to the draft from here: that would show as an unsaved change the user
+            // never made, and hold back the next check. With no album chosen, the engine syncs the
+            // album the link points at, or the first one.
+            let effectiveAlbumID = settings.albumID ?? linkAlbumID
+            let albumName = info.albums.first(where: { $0.id == effectiveAlbumID })?.name
+                ?? info.albums.first?.name
+
             if info.albums.isEmpty {
                 shareStatus = "This share contains no albums."
                 shareStatusIsError = true
@@ -291,41 +304,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Records that a setting was just edited. The panel writes every keystroke straight through,
-    /// so an automatic pass must not start until the typing has stopped.
-    private func settingsChanged() {
-        lastSettingsChangeAt = Date()
-    }
-
     private func tick() async {
-        guard !isSyncing, engine != nil else { return }
-        guard !shareLink.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let schedule = SyncSchedule(interval: TimeInterval(intervalMinutes * 60))
-        guard schedule.shouldStart(now: Date(), lastAttempt: lastAttemptAt, lastSettingsChange: lastSettingsChangeAt) else {
-            return
-        }
+        guard !isSyncing, engine != nil, editor.isReadyToSync, let settings = editor.saved else { return }
+        let schedule = SyncSchedule(interval: settings.checkInterval)
+        guard schedule.shouldStart(now: Date(), lastAttempt: lastAttemptAt) else { return }
         await runSync(ignoreDelays: false)
     }
 
     private func runSync(ignoreDelays: Bool) async {
-        guard let engine, !isSyncing else { return }
+        guard let engine, let settings = editor.saved, settings.isConfigured, !isSyncing else { return }
         lastAttemptAt = Date()
         phase = .syncing(completed: 0, total: 0)
-        let trimmedAlbum = photosAlbumName.trimmingCharacters(in: .whitespaces)
-        let config = SyncConfiguration(shareLink: shareLink,
-                                       preferredAlbumID: selectedAlbumID,
-                                       photosAlbumName: trimmedAlbum.isEmpty ? nil : trimmedAlbum,
-                                       checkInterval: TimeInterval(intervalMinutes * 60),
-                                       ignoreDelays: ignoreDelays)
         do {
-            let report = try await engine.run(config)
+            let report = try await engine.run(settings.syncConfiguration(ignoreDelays: ignoreDelays))
             lastReport = report
             lastSyncAt = Date()
             syncedCount = ledger?.syncedCount ?? syncedCount
             phase = .idle
             var summary = "Check finished: \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed"
             if report.foundInPhotos > 0 { summary += ", \(report.foundInPhotos) already in Photos" }
-            if report.refiled > 0 { summary += ", \(report.refiled) put back into “\(trimmedAlbum)”" }
+            if report.refiled > 0 { summary += ", \(report.refiled) put back into “\(settings.photosAlbumName)”" }
             bridge.log(.info, summary)
         } catch is CancellationError {
             phase = .idle

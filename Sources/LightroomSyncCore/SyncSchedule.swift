@@ -2,37 +2,30 @@ import Foundation
 
 /// Decides when the background loop may start an automatic sync pass.
 ///
-/// The settle time matters as much as the interval: the settings panel writes every keystroke
-/// straight to the model, so without it a pass could start while an album name is half typed and
-/// file the photos into an album called `Lightroo`.
+/// It only has to answer "is the next check due?". What keeps a pass from running against settings
+/// that are still being typed is `SyncSettingsEditor`: the loop reads the saved settings, and the
+/// draft in the panel is not saved until the user presses Save.
 public struct SyncSchedule: Equatable {
     public var interval: TimeInterval
-    /// How long the settings must stay untouched before an automatic pass may start.
-    public var settingsSettleTime: TimeInterval
 
-    public static let defaultSettingsSettleTime: TimeInterval = 8
-
-    public init(interval: TimeInterval, settingsSettleTime: TimeInterval = SyncSchedule.defaultSettingsSettleTime) {
+    public init(interval: TimeInterval) {
         self.interval = interval
-        self.settingsSettleTime = settingsSettleTime
     }
 
     public enum Decision: Equatable {
         case start
-        case waitForSettings
         case waitForInterval
     }
 
-    public func decision(now: Date, lastAttempt: Date?, lastSettingsChange: Date?) -> Decision {
-        if let lastSettingsChange {
-            let idle = now.timeIntervalSince(lastSettingsChange)
-            if idle >= 0, idle < settingsSettleTime { return .waitForSettings }
-        }
+    public func decision(now: Date, lastAttempt: Date?) -> Decision {
         guard let lastAttempt else { return .start }
-        return now.timeIntervalSince(lastAttempt) >= interval ? .start : .waitForInterval
+        let elapsed = now.timeIntervalSince(lastAttempt)
+        // A negative elapsed time means the clock moved backwards; check now rather than wedge
+        // the loop until the clock catches up.
+        return (elapsed < 0 || elapsed >= interval) ? .start : .waitForInterval
     }
 
-    public func shouldStart(now: Date, lastAttempt: Date?, lastSettingsChange: Date?) -> Bool {
-        decision(now: now, lastAttempt: lastAttempt, lastSettingsChange: lastSettingsChange) == .start
+    public func shouldStart(now: Date, lastAttempt: Date?) -> Bool {
+        decision(now: now, lastAttempt: lastAttempt) == .start
     }
 }
