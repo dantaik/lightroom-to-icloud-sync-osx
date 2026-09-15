@@ -283,6 +283,46 @@ final class SyncEngineConcurrencyTests: XCTestCase {
         XCTAssertEqual(filesLeft(harness), [], "a stop must not strand the files it was fetching")
     }
 
+    /// The bug this guards: saving settings mid-pass cleared the app's "a pass is running" flag,
+    /// and twenty seconds later the scheduler started a second pass on top of the first. Both
+    /// shared one ledger and one download directory, and sweeping that directory is among the
+    /// first things a pass does — so the second one deleted what the first still had in flight.
+    func testASecondPassIsRefusedWhileOneIsRunning() async throws {
+        let harness = try makeHarness(photoCount: 4)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let watching = WatchingTransport(harness.fake)
+        watching.holdsDownloads = true
+        let engine = makeEngine(harness, transport: watching)
+
+        let first = Task { try await engine.run(config(concurrency: 2)) }
+        // Wait until the first pass is genuinely mid-fetch before the second one tries.
+        while watching.started < 2 { try await Task.sleep(for: .milliseconds(5)) }
+
+        do {
+            _ = try await engine.run(config(concurrency: 2))
+            XCTFail("a second pass must not run while the first is still fetching")
+        } catch let error as SyncEngineError {
+            XCTAssertEqual(error, .alreadyRunning)
+        }
+
+        watching.release()
+        let report = try await first.value
+        XCTAssertEqual(report.synced, 4, "the refused pass must not have disturbed the running one")
+    }
+
+    /// And once it has finished, the engine is free again.
+    func testAPassMayRunAfterThePreviousOneFinished() async throws {
+        let harness = try makeHarness(photoCount: 2)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let engine = makeEngine(harness)
+
+        let first = try await engine.run(config(concurrency: 2))
+        XCTAssertEqual(first.synced, 2)
+        // Nothing new to sync, but it has to be allowed to look.
+        let second = try await engine.run(config(concurrency: 2))
+        XCTAssertEqual(second.alreadySynced, 2)
+    }
+
     func testStoppingMidPassKeepsWhatWasAlreadySyncedAndNothingMore() async throws {
         let harness = try makeHarness(photoCount: 8)
         defer { try? FileManager.default.removeItem(at: harness.directory) }

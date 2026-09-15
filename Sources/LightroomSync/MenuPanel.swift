@@ -227,7 +227,7 @@ struct MenuPanel: View {
                 Spacer(minLength: 0)
             }
 
-            caption("Lightroom renders each full-size photo on demand, and a check spends most of its time waiting for that. Fetching several at once overlaps the waiting. Lower it if the log says Lightroom is asking you to slow down.")
+            caption("Lightroom renders each full-size photo on demand, and a check spends most of its time waiting for that. Fetching several at once overlaps the waiting. Lower it if the log says Lightroom is asking you to slow down, or that connections keep failing — several large photos at once can be more than a connection will carry.")
         }
     }
 
