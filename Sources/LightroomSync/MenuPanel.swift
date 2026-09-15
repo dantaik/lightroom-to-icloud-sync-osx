@@ -10,6 +10,13 @@ import SwiftUI
 struct MenuPanel: View {
     @EnvironmentObject private var model: AppModel
 
+    /// The panel's text fields, so that saving can take focus off whichever one is being edited.
+    private enum Field: Hashable {
+        case shareLink, photosAlbum, fetchAtOnce, interval
+    }
+
+    @FocusState private var focusedField: Field?
+
     private enum Metrics {
         static let width: CGFloat = 400
         static let padding: CGFloat = 16
@@ -30,6 +37,7 @@ struct MenuPanel: View {
                 lightroomSection
                 photosSection
                 sizeSection
+                fetchSection
                 scheduleSection
                 saveBar
             }
@@ -63,11 +71,7 @@ struct MenuPanel: View {
                         .foregroundStyle(Color.secondary)
                 }
 
-                if case .syncing(let completed, let total) = model.phase, total > 0 {
-                    ProgressView(value: Double(completed), total: Double(total))
-                        .progressViewStyle(.linear)
-                        .padding(.top, 3)
-                }
+                progressBar
             }
 
             Spacer(minLength: 0)
@@ -93,6 +97,29 @@ struct MenuPanel: View {
         }
     }
 
+    /// The bar under the status line.
+    ///
+    /// Once a pass has counted its photos the bar counts them off. Before that it cannot: the
+    /// share has still to be read and the album still to be listed, and neither says in advance
+    /// how long it will take. So the bar runs without a value, and the status line above it names
+    /// the step — which is better than the nothing at all that used to show through the whole of
+    /// the run-up, the longest silence in a pass on a large album.
+    @ViewBuilder
+    private var progressBar: some View {
+        switch model.phase {
+        case .preparing:
+            ProgressView()
+                .progressViewStyle(.linear)
+                .padding(.top, 3)
+        case .syncing(let completed, let total) where total > 0:
+            ProgressView(value: Double(completed), total: Double(total))
+                .progressViewStyle(.linear)
+                .padding(.top, 3)
+        case .idle, .failed, .syncing:
+            EmptyView()
+        }
+    }
+
     // MARK: Settings
 
     private var lightroomSection: some View {
@@ -102,6 +129,7 @@ struct MenuPanel: View {
             TextField("https://adobe.ly/… or lightroom.adobe.com/shares/…",
                       text: $model.editor.draft.shareLink)
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .shareLink)
 
             if !model.shareStatus.isEmpty {
                 Label {
@@ -151,13 +179,14 @@ struct MenuPanel: View {
             TextField("Optional — leave empty to add to the library only",
                       text: $model.editor.draft.photosAlbumName)
                 .textFieldStyle(.roundedBorder)
+                .focused($focusedField, equals: .photosAlbum)
 
             caption("Created if it does not exist, and refilled if you delete it.")
         }
     }
 
-    /// The size photos are synced at. Worth a section of its own: it is the one setting that
-    /// decides how long a check takes and how much of iCloud the album fills.
+    /// The size photos are synced at: the setting that decides how much of iCloud the album fills,
+    /// and how much there is to download in the first place.
     private var sizeSection: some View {
         VStack(alignment: .leading, spacing: Metrics.withinSection) {
             sectionHeader("Photo size")
@@ -171,23 +200,32 @@ struct MenuPanel: View {
             .pickerStyle(.menu)
 
             caption(model.editor.draft.photoSize.summary)
+        }
+    }
+
+    /// How many photos are downloaded in parallel. A setting of its own rather than a row under
+    /// the size: the two are unrelated, and the size section reads as one thing again without it.
+    private var fetchSection: some View {
+        VStack(alignment: .leading, spacing: Metrics.withinSection) {
+            sectionHeader("Fetch at once")
 
             HStack(spacing: 6) {
-                Text("Fetch at once")
-
-                Spacer(minLength: 0)
-
                 TextField("", value: $model.editor.draft.downloadConcurrency, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
                     .font(.body.monospacedDigit())
                     .frame(width: 54)
+                    .focused($focusedField, equals: .fetchAtOnce)
 
                 Stepper("", value: $model.editor.draft.downloadConcurrency,
                         in: SyncSettings.downloadConcurrencyRange)
                     .labelsHidden()
+
+                Text(model.editor.draft.downloadConcurrency == 1 ? "photo" : "photos")
+                    .foregroundStyle(Color.secondary)
+
+                Spacer(minLength: 0)
             }
-            .padding(.top, 2)
 
             caption("Lightroom renders each full-size photo on demand, and a check spends most of its time waiting for that. Fetching several at once overlaps the waiting. Lower it if the log says Lightroom is asking you to slow down.")
         }
@@ -207,6 +245,7 @@ struct MenuPanel: View {
                     .multilineTextAlignment(.trailing)
                     .font(.body.monospacedDigit())
                     .frame(width: 54)
+                    .focused($focusedField, equals: .interval)
 
                 Stepper("", value: $model.editor.draft.intervalValue,
                         in: model.editor.draft.intervalUnit.range)
@@ -237,11 +276,17 @@ struct MenuPanel: View {
 
     private var saveBar: some View {
         HStack(spacing: 8) {
-            Button("Save") { model.save() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(!model.canSave)
-                .help("Checks run on the saved settings only.")
+            Button("Save") {
+                // Focus goes first, and not only to leave the panel at rest afterwards: a field
+                // holding a number writes what is typed in it back to the draft when it stops
+                // being edited, so the save has to come after that and not before it.
+                focusedField = nil
+                model.save()
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!model.canSave)
+            .help("Checks run on the saved settings only.")
 
             Button("Revert") { model.revert() }
                 .disabled(!model.hasUnsavedChanges)

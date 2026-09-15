@@ -219,6 +219,7 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
 final class RecordingSink: SyncEventSink {
     var lines: [String] = []
     var progress: [(Int, Int)] = []
+    var stages: [SyncStage] = []
     /// The protocol says these are called from arbitrary threads, and since photos are fetched
     /// several at a time they genuinely are.
     private let lock = NSLock()
@@ -229,6 +230,10 @@ final class RecordingSink: SyncEventSink {
 
     func progress(completed: Int, total: Int) {
         lock.withLock { progress.append((completed, total)) }
+    }
+
+    func stage(_ stage: SyncStage) {
+        lock.withLock { stages.append(stage) }
     }
 }
 

@@ -138,9 +138,9 @@ final class SyncEngineConcurrencyTests: XCTestCase {
                    downloadDirectory: harness.downloads, sink: harness.sink)
     }
 
-    private func config(concurrency: Int) -> SyncConfiguration {
+    private func config(concurrency: Int, photosAlbumName: String? = "Lightroom") -> SyncConfiguration {
         SyncConfiguration(shareLink: "https://lightroom.adobe.com/shares/\(share)",
-                          photosAlbumName: "Lightroom", checkInterval: 15 * 60,
+                          photosAlbumName: photosAlbumName, checkInterval: 15 * 60,
                           downloadConcurrency: concurrency)
     }
 
@@ -241,6 +241,27 @@ final class SyncEngineConcurrencyTests: XCTestCase {
         XCTAssertEqual(harness.sink.progress.first?.0, 0)
         XCTAssertEqual(harness.sink.progress.last.map { [$0.0, $0.1] }, [7, 7])
         XCTAssertEqual(harness.sink.progress.map(\.0), Array(0...7), "one step per candidate, in order")
+    }
+
+    func testTheRunUpToThePhotosIsReportedStepByStep() async throws {
+        let harness = try makeHarness(photoCount: 3)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+
+        _ = try await makeEngine(harness).run(config(concurrency: 2))
+        XCTAssertEqual(harness.sink.stages,
+                       [.resolvingLink, .readingShare, .listingAlbum, .refilingAlbum, .clearingDownloads],
+                       "the whole run-up, in the order it runs, so the panel can name the step it is on")
+    }
+
+    func testTheRunUpSkipsTheAlbumStepWithNoPhotosAlbum() async throws {
+        let harness = try makeHarness(photoCount: 3)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+
+        _ = try await makeEngine(harness).run(config(concurrency: 2, photosAlbumName: nil))
+        XCTAssertFalse(harness.sink.stages.contains(.refilingAlbum),
+                       "with no album to keep in step there is nothing to announce")
+        XCTAssertEqual(harness.sink.stages,
+                       [.resolvingLink, .readingShare, .listingAlbum, .clearingDownloads])
     }
 
     // MARK: - Stopping and starting again

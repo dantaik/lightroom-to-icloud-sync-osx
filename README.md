@@ -101,7 +101,7 @@ plutil -extract CFBundleIconFile raw /Applications/LightroomSync.app/Contents/In
 1. **Share the album from Lightroom.** Open the album in Lightroom (desktop, web or mobile), choose *Share & Invite*, set *Link access* to **Anyone can view**, and under *Link settings* turn on **Allow downloads**. Copy the link; it looks like `https://adobe.ly/…` or `https://lightroom.adobe.com/shares/…`.
 2. Click the menu bar icon and paste the link into *Lightroom album share link*.
 3. Optionally name a **Photos album**. The app creates it if it does not exist. Leave it empty to add photos to the library only.
-4. Choose a **Photo size**. Large is the default; see [Photo size](#photo-size). **Fetch at once** below it decides how many photos are downloaded in parallel; 5 is the default and is usually right.
+4. Choose a **Photo size**. Large is the default; see [Photo size](#photo-size). **Fetch at once**, in the section below it, decides how many photos are downloaded in parallel; 5 is the default and is usually right.
 5. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
 6. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
 
@@ -228,7 +228,9 @@ A photo without a capture date is not looked up at all, since the search would h
 | `~/Library/Logs/LightroomSync/sync.log` | What every check did, photo by photo. *Open log* opens it. |
 | macOS user defaults | The saved settings |
 
-The panel itself stays short: a status line for what the app is doing and what the last check did, the settings, and the actions. The detail goes to the log. While a check runs, the menu bar icon turns.
+The panel itself stays short: a status line for what the app is doing and what the last check did, the settings, and the actions. The detail goes to the log. While a check runs, the menu bar icon turns and a bar under the status line follows it.
+
+A check does not reach the photos straight away: it has the share link to follow, the share to read, the album to page through, and the Photos album to put anything back into — which, on the first check after the app starts, is also where macOS asks for permission to the Photos library. None of that says in advance how long it will take, so until the photos have been counted the bar runs without a value and the status line names the step it is on: *Opening the share link…*, *Reading the share…*, *Listing the album…*, *Checking the Photos album…*, *Clearing unfinished downloads…*. Once the album has been listed the bar counts the photos off instead.
 
 ### Diagnostics
 
