@@ -12,6 +12,7 @@ final class SyncEngineTests: XCTestCase {
         let importer: FakeImporter
         let photoLibrary: FakePhotoLibrary
         let resizer: FakeResizer
+        let metadataWriter: FakeMetadataWriter
         let sink: RecordingSink
         let ledger: Ledger
         let engine: SyncEngine
@@ -28,12 +29,13 @@ final class SyncEngineTests: XCTestCase {
         importer.library = photoLibrary
         let sink = RecordingSink()
         let resizer = FakeResizer()
+        let metadataWriter = FakeMetadataWriter()
         let ledger = try Ledger(fileURL: directory.appendingPathComponent("ledger.json"))
         let engine = SyncEngine(client: LightroomGalleryClient(transport: transport), ledger: ledger, importer: importer,
-                                photoLibrary: photoLibrary, resizer: resizer,
+                                photoLibrary: photoLibrary, resizer: resizer, metadataWriter: metadataWriter,
                                 downloadDirectory: directory.appendingPathComponent("downloads"), settleTime: 120, sink: sink)
         return Harness(transport: transport, importer: importer, photoLibrary: photoLibrary, resizer: resizer,
-                       sink: sink, ledger: ledger, engine: engine, directory: directory)
+                       metadataWriter: metadataWriter, sink: sink, ledger: ledger, engine: engine, directory: directory)
     }
 
     private func config(ignoreDelays: Bool = false, albumName: String? = "Lightroom",
@@ -525,5 +527,190 @@ extension SyncEngineTests {
         XCTAssertEqual(SyncEngine.refileReason([entry(album: "Lightroo")], albumName: "Lightroom"), "the album changed")
         XCTAssertEqual(SyncEngine.refileReason([entry(album: nil)], albumName: "Lightroom"),
                        "they were synced before the album was recorded")
+    }
+
+    // MARK: - Metadata
+
+    /// A payload with everything a described photo carries, for the tests below.
+    private var describedPayload: [String: Any] {
+        [
+            "location": ["latitude": 35.6586, "longitude": 139.7454],
+            "ratings": ["owner": ["rating": 5]],
+            "xmp": [
+                "dc": ["title": ["x-default": "Tokyo Tower"], "subject": ["Tokyo", "travel"]],
+                "tiff": ["Make": "NIKON CORPORATION", "Model": "NIKON Z 8"],
+                "exif": ["ISOSpeedRatings": [400]],
+            ],
+        ]
+    }
+
+    /// The whole point: what Lightroom knows about a photo reaches both the file and Photos.
+    func testLightroomsMetadataReachesTheFileAndThePhotosAsset() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), extras: describedPayload),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(report.synced, 1)
+
+        let written = try XCTUnwrap(harness.metadataWriter.written.first)
+        XCTAssertEqual(written.title, "Tokyo Tower")
+        XCTAssertEqual(written.keywords, ["Tokyo", "travel"])
+        XCTAssertEqual(written.cameraModel, "NIKON Z 8")
+        XCTAssertEqual(written.iso, 400)
+        XCTAssertEqual(written.rating, 5)
+        XCTAssertNotNil(written.captureDate)
+
+        let request = try XCTUnwrap(harness.importer.requests.first)
+        XCTAssertEqual(request.location, PhotoLocation(latitude: 35.6586, longitude: 139.7454))
+        XCTAssertTrue(request.isFavorite)
+        XCTAssertEqual(request.captureDate, written.captureDate)
+    }
+
+    /// A photo with nothing to say is not rewritten at all: no file is touched, no quality spent.
+    func testAPhotoWithNoMetadataIsImportedUntouched() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        oneOldPhoto(harness, cropped: (4000, 3000))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        // A plain photo still has a capture date, which is metadata worth writing; take that away
+        // and there is genuinely nothing to say about it.
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "P1000123.DNG", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), captureDate: "0000-00-00T00:00:00"),
+        ]))
+
+        let report = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertTrue(harness.metadataWriter.written.isEmpty)
+        XCTAssertNil(harness.importer.requests.first?.location)
+        XCTAssertEqual(harness.importer.requests.first?.isFavorite, false)
+    }
+
+    /// The Tokyo case, end to end: Lightroom gives a wall-clock reading, the downloaded file says
+    /// which zone the camera was in, and Photos is given the instant the two agree on.
+    func testCaptureTimeComesFromTheFilesTimeZoneWhenItHasOne() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.metadataWriter.embedded = EmbeddedPhotoMetadata(captureTimeZoneOffset: 9 * 3600,
+                                                                hasCaptureDate: true, hasCameraInfo: true)
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), captureDate: "2024-09-18T15:55:12"),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        _ = try await harness.engine.run(config(size: .original), now: now)
+
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = TimeZone(secondsFromGMT: 9 * 3600)!
+        let expected = tokyo.date(from: DateComponents(year: 2024, month: 9, day: 18, hour: 15, minute: 55, second: 12))
+        XCTAssertEqual(harness.importer.requests.first?.captureDate, expected)
+        XCTAssertEqual(harness.metadataWriter.written.first?.captureTimeZoneOffset, 9 * 3600)
+        // The ledger records what Photos was told, so a second Mac looks for the same instant.
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.captureDate, expected)
+    }
+
+    /// A rendition Adobe generated arrives with no camera tags at all. That is worth counting and
+    /// worth saying, because it is why the app has to supply the metadata itself.
+    func testARenditionWithNoEXIFIsReportedAndDescribedAnyway() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), cropped: (2048, 1365), extras: describedPayload),
+        ]))
+        setRendition(harness, assetID: "p1", width: 2048, height: 1365)
+
+        let report = try await harness.engine.run(config(size: .small), now: now)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.metadataRestored, 1)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("arrived without its EXIF") })
+        XCTAssertEqual(harness.metadataWriter.written.first?.cameraModel, "NIKON Z 8")
+    }
+
+    /// A file that already carries its own EXIF is not reported as stripped, though the gaps in it
+    /// are still filled.
+    func testAFullSizeDownloadWithItsOwnEXIFIsNotReportedAsStripped() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.metadataWriter.embedded = EmbeddedPhotoMetadata(hasCaptureDate: true, hasCameraInfo: true)
+        let now = Date()
+        oneOldPhoto(harness, cropped: (4000, 3000))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.metadataRestored, 0)
+        XCTAssertFalse(harness.sink.lines.contains { $0.contains("arrived without its EXIF") })
+    }
+
+    /// Failing to describe a photo is not failing to sync it. The photo goes in as it was served,
+    /// and Photos is still told the capture date and the place, which do not come from the file.
+    func testAMetadataWriteThatFailsStillSyncsThePhoto() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.metadataWriter.error = NSError(domain: "FakeMetadataWriter", code: 1,
+                                               userInfo: [NSLocalizedDescriptionKey: "no room on disk"])
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), extras: describedPayload),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.failed, 0)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("Could not write metadata") })
+        XCTAssertEqual(harness.importer.requests.first?.location, PhotoLocation(latitude: 35.6586, longitude: 139.7454))
+        XCTAssertTrue(harness.importer.requests.first?.isFavorite ?? false)
+    }
+
+    /// When the writer produces a new file, that is the one imported, and the one it replaced is
+    /// cleaned up rather than left behind in the downloads directory.
+    func testTheDescribedFileIsWhatGetsImportedAndNothingIsLeftBehind() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        harness.metadataWriter.writesNewFile = true
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), extras: describedPayload),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(harness.importer.requests.first?.fileURL.lastPathComponent, "p1-described.jpg")
+
+        let downloads = harness.directory.appendingPathComponent("downloads")
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: downloads.path)) ?? []
+        XCTAssertEqual(left, [], "the downloads directory should be empty after a sync")
+    }
+
+    /// Photos that Lightroom rated below the threshold arrive as ordinary photos.
+    func testALowRatingDoesNotBecomeAFavorite() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0001.NEF", added: now.addingTimeInterval(-7200),
+                       edited: now.addingTimeInterval(-7200), extras: ["ratings": ["owner": ["rating": 2]]]),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        _ = try await harness.engine.run(config(size: .original), now: now)
+        XCTAssertEqual(harness.importer.requests.first?.isFavorite, false)
+        XCTAssertEqual(harness.metadataWriter.written.first?.rating, 2)
     }
 }

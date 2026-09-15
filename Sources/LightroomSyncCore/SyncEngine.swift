@@ -35,6 +35,9 @@ public struct SyncReport: Equatable {
     public var refiled = 0
     public var failed = 0
     public var downgraded = 0
+    /// Photos that arrived without the metadata a camera writes, and had Lightroom's copy of it
+    /// put back in before they were imported.
+    public var metadataRestored = 0
     public var startedAt: Date
     public var finishedAt: Date
 
@@ -78,6 +81,7 @@ public final class SyncEngine {
     private let importer: PhotoImporting
     private let photoLibrary: PhotoLibraryAccess
     private let resizer: PhotoResizing
+    private let metadataWriter: PhotoMetadataWriting
     private let downloadDirectory: URL
     private let settleTime: TimeInterval
     private weak var sink: SyncEventSink?
@@ -90,6 +94,7 @@ public final class SyncEngine {
     public init(client: LightroomGalleryClient, ledger: Ledger, importer: PhotoImporting,
                 photoLibrary: PhotoLibraryAccess = NullPhotoLibraryAccess(),
                 resizer: PhotoResizing = NoPhotoResizing(),
+                metadataWriter: PhotoMetadataWriting = NoPhotoMetadataWriting(),
                 downloadDirectory: URL, settleTime: TimeInterval = SyncPolicy.defaultSettleTime,
                 sink: SyncEventSink?) {
         self.client = client
@@ -97,6 +102,7 @@ public final class SyncEngine {
         self.importer = importer
         self.photoLibrary = photoLibrary
         self.resizer = resizer
+        self.metadataWriter = metadataWriter
         self.downloadDirectory = downloadDirectory
         self.settleTime = settleTime
         self.sink = sink
@@ -185,16 +191,20 @@ public final class SyncEngine {
                 log(.warning, "\(name): Lightroom served \(servedSize.width)×\(servedSize.height) but the edited photo is \(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0). Photos synced from Lightroom Classic only have smart previews in the cloud.")
             }
 
-            let fileURL = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
-            if fileURL != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
-            let size = fileURL == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: fileURL) ?? servedSize)
+            let shrunk = shrink(downloaded.fileURL, servedSize: servedSize, to: config.photoSize, name: name)
+            if shrunk != downloaded.fileURL { try? FileManager.default.removeItem(at: downloaded.fileURL) }
+            let size = shrunk == downloaded.fileURL ? servedSize : (JPEGInfo.pixelSize(ofFileAt: shrunk) ?? servedSize)
+
+            let (fileURL, metadata) = describe(shrunk, from: photo, name: name, report: &report)
             // Lightroom serves a JPEG named after the original, and a rendition carries no name at
             // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
             let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
 
             let request = PhotoImportRequest(fileURL: fileURL,
                                              originalFileName: fileName,
-                                             captureDate: photo.captureDate,
+                                             captureDate: metadata.captureDate ?? photo.captureDate,
+                                             location: metadata.location,
+                                             isFavorite: metadata.isFavorite,
                                              albumName: albumName)
             let localIdentifier: String
             do {
@@ -211,7 +221,7 @@ public final class SyncEngine {
                                           fileName: fileName,
                                           originalSHA256: photo.originalSHA256,
                                           photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
-                                          syncedAt: now, captureDate: photo.captureDate,
+                                          syncedAt: now, captureDate: request.captureDate,
                                           pixelWidth: size?.width, pixelHeight: size?.height,
                                           downgraded: downgraded))
             report.synced += 1
@@ -255,6 +265,42 @@ public final class SyncEngine {
         } catch {
             log(.warning, "Could not resize \(name) to \(maxLongEdge) px (\(error.localizedDescription)); importing it at \(servedSize.width)×\(servedSize.height)")
             return fileURL
+        }
+    }
+
+    /// Settles what the photo says about itself, and makes sure the file says it too.
+    ///
+    /// Two things are decided here. The capture time, because Lightroom reports it without a zone
+    /// and only the file knows which one the camera was set to. And whether the file is carrying
+    /// Lightroom's description of the photo at all: the full-size download is, but the 2048 px
+    /// rendition behind the Small size is a preview Adobe generated, and a photo that reaches
+    /// Photos out of one has no camera, no keywords and no place on the map unless they are put
+    /// back. Anything already in the file is left alone; only the gaps are filled.
+    ///
+    /// Returns the file to import and the metadata that was settled on. Failing to write metadata
+    /// is not failing to sync: the photo is imported as served and the log says what was lost.
+    private func describe(_ fileURL: URL, from photo: LightroomPhoto, name: String,
+                          report: inout SyncReport) -> (URL, PhotoMetadata) {
+        let embedded = metadataWriter.embeddedMetadata(fileAt: fileURL)
+        let captureTime = CaptureTime.resolve(rawCaptureDate: photo.rawCaptureDate,
+                                              embeddedOffsetSeconds: embedded.captureTimeZoneOffset)
+        var metadata = photo.metadata
+        metadata.captureDate = captureTime.date ?? photo.captureDate
+        metadata.captureTimeZoneOffset = captureTime.offsetSeconds
+
+        // Nothing to say about the photo means nothing to write, and no file rewritten for nothing.
+        guard !metadata.isEmpty else { return (fileURL, metadata) }
+        if embedded.looksStripped {
+            report.metadataRestored += 1
+            log(.info, "\(name) arrived without its EXIF; writing Lightroom's copy of it back in")
+        }
+        do {
+            let written = try metadataWriter.write(metadata, toFileAt: fileURL)
+            if written != fileURL { try? FileManager.default.removeItem(at: fileURL) }
+            return (written, metadata)
+        } catch {
+            log(.warning, "Could not write metadata into \(name) (\(error.localizedDescription)); importing it as it was served")
+            return (fileURL, metadata)
         }
     }
 

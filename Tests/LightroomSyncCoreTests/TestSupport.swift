@@ -103,6 +103,29 @@ final class FakeResizer: PhotoResizing {
     }
 }
 
+/// Stands in for ImageIO: reports whatever the test says the downloaded file carries, and records
+/// the metadata it was asked to write.
+final class FakeMetadataWriter: PhotoMetadataWriting {
+    /// What every file is said to already contain.
+    var embedded = EmbeddedPhotoMetadata()
+    var written: [PhotoMetadata] = []
+    var error: Error?
+    /// Set to write a new file next to the one handed over, the way the real writer does.
+    var writesNewFile = false
+
+    func embeddedMetadata(fileAt url: URL) -> EmbeddedPhotoMetadata { embedded }
+
+    func write(_ metadata: PhotoMetadata, toFileAt url: URL) throws -> URL {
+        written.append(metadata)
+        if let error { throw error }
+        guard writesNewFile else { return url }
+        let destination = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-described.jpg")
+        try Data(contentsOf: url).write(to: destination, options: .atomic)
+        return destination
+    }
+}
+
 /// Stands in for the Photos library: which assets it holds and which album each one is in.
 final class FakePhotoLibrary: PhotoLibraryAccess {
     /// Local identifiers keyed by the file name the library is asked about.
@@ -173,20 +196,24 @@ func assetsPageJSON(entries: [[String: Any]], next: String? = nil) -> String {
 }
 
 func assetEntry(id: String, fileName: String, sha: String? = nil, added: Date, edited: Date? = nil,
-                cropped: (Int, Int) = (4000, 3000), subtype: String = "image", hasEdits: Bool = true) -> [String: Any] {
+                cropped: (Int, Int) = (4000, 3000), subtype: String = "image", hasEdits: Bool = true,
+                captureDate: String = "2024-05-01T10:20:30",
+                extras: [String: Any] = [:]) -> [String: Any] {
     var develop: [String: Any] = ["croppedWidth": cropped.0, "croppedHeight": cropped.1, "processingModel": "lightroom"]
     if hasEdits { develop["xmpCameraRaw"] = ["sha256": "abc"] }
     if let edited { develop["userUpdated"] = iso(edited) }
     var importSource: [String: Any] = ["fileName": fileName, "originalWidth": 4000, "originalHeight": 3000, "contentType": "image/jpeg"]
     if let sha { importSource["sha256"] = sha }
+    var payload: [String: Any] = [
+        "captureDate": captureDate,
+        "userCreated": iso(added), "userUpdated": iso(edited ?? added),
+        "develop": develop, "importSource": importSource,
+    ]
+    payload.merge(extras) { _, extra in extra }
     let asset: [String: Any] = [
         "id": id, "type": "asset", "subtype": subtype,
         "created": iso(added), "updated": iso(edited ?? added),
-        "payload": [
-            "captureDate": "2024-05-01T10:20:30",
-            "userCreated": iso(added), "userUpdated": iso(edited ?? added),
-            "develop": develop, "importSource": importSource,
-        ],
+        "payload": payload,
         "links": ["/rels/rendition_type/2048": ["href": "assets/\(id)/renditions/x"]],
     ]
     return [

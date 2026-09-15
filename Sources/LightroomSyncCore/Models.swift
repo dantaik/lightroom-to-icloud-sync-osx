@@ -96,6 +96,20 @@ public struct LightroomAsset: Decodable {
         public let userUpdated: String?
         public let develop: Develop?
         public let importSource: ImportSource?
+        /// The original file's XMP packet, as Adobe serializes it: namespaces (`dc`, `exif`,
+        /// `tiff`, `aux`, `xmp`) mapping to whatever that photo carries. Shapes vary, so it is
+        /// kept as a tree and read by path; see ``PhotoMetadata``.
+        public let xmp: JSONValue?
+        /// Where Lightroom places the photo on its map, in decimal degrees.
+        public let location: Location?
+        /// Star ratings keyed by the Adobe user who set them.
+        public let ratings: JSONValue?
+    }
+
+    public struct Location: Decodable {
+        public let latitude: Double?
+        public let longitude: Double?
+        public let altitude: Double?
     }
 
     public struct Develop: Decodable {
@@ -156,6 +170,11 @@ public struct LightroomPhoto: Equatable, Identifiable {
     public let croppedWidth: Int?
     public let croppedHeight: Int?
     public let captureDate: Date?
+    /// Lightroom's capture date exactly as it was served. Kept because it usually names no time
+    /// zone, so ``CaptureTime`` has to read it again once the downloaded file says which one.
+    public let rawCaptureDate: String?
+    /// What Lightroom knows about the photo besides its pixels, from the album listing.
+    public let metadata: PhotoMetadata
     /// When the photo was added to the shared album (best effort from Lightroom's timestamps).
     public let addedToAlbumAt: Date?
     /// The most recent edit or metadata change Lightroom reports for the photo.
@@ -171,7 +190,8 @@ public struct LightroomPhoto: Equatable, Identifiable {
     public init(assetID: String, subtype: String, fileName: String?, originalSHA256: String?,
                 originalWidth: Int?, originalHeight: Int?, croppedWidth: Int?, croppedHeight: Int?,
                 captureDate: Date?, addedToAlbumAt: Date?, lastEditedAt: Date?, hasEdits: Bool,
-                renditionHrefs: [String: String] = [:]) {
+                renditionHrefs: [String: String] = [:],
+                rawCaptureDate: String? = nil, metadata: PhotoMetadata = PhotoMetadata()) {
         self.assetID = assetID
         self.subtype = subtype
         self.fileName = fileName
@@ -181,6 +201,8 @@ public struct LightroomPhoto: Equatable, Identifiable {
         self.croppedWidth = croppedWidth
         self.croppedHeight = croppedHeight
         self.captureDate = captureDate
+        self.rawCaptureDate = rawCaptureDate
+        self.metadata = metadata
         self.addedToAlbumAt = addedToAlbumAt
         self.lastEditedAt = lastEditedAt
         self.hasEdits = hasEdits
@@ -210,7 +232,9 @@ public struct LightroomPhoto: Equatable, Identifiable {
                 ?? AdobeDate.parse(asset.created),
             lastEditedAt: edits.max(),
             hasEdits: payload?.develop?.hasCameraRawSettings ?? false,
-            renditionHrefs: Self.renditions(in: asset.links)
+            renditionHrefs: Self.renditions(in: asset.links),
+            rawCaptureDate: payload?.captureDate,
+            metadata: PhotoMetadata(payload: payload)
         )
     }
 

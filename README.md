@@ -126,6 +126,7 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 - **Sync now** checks immediately and ignores both delays.
 - Videos are listed but skipped. Only photos are synced.
 - Each photo is capped at the [photo size](#photo-size) you chose, 6016 px on the long edge by default.
+- Each photo keeps what Lightroom knows about it. See [Metadata](#metadata).
 
 ### Photo size
 
@@ -141,6 +142,29 @@ A full-size render from a modern camera is 40–60 megapixels and 20–30 MB. Th
 Large, Medium and Original come from the same full-size download. Large and Medium are then scaled down on your Mac with ImageIO, which keeps the EXIF, the XMP and the colour profile, and re-encodes at JPEG quality 0.9. A photo that is already smaller than the size you picked is imported exactly as it arrived, never re-encoded and never enlarged.
 
 Changing the size affects photos synced from then on. A photo already in the ledger is never synced again, so it stays at the size it was imported at.
+
+### Metadata
+
+A photo should arrive in Photos described the way it is described in Lightroom, so it turns up in a search for the lens you shot it with and sits in the right place on the map. The full-size download already carries most of that in its EXIF and XMP. The 2048 px rendition behind **Small** does not reliably: it is a preview Adobe generated, and what survives in it is Adobe's business. So the app carries the album listing's own copy of the metadata and fills in whatever the file is missing, at every size.
+
+| What | Where it ends up |
+|---|---|
+| Capture time | The photo's date in Photos, and `DateTimeOriginal` in the file |
+| Place | The Photos map and Places, and the GPS tags in the file |
+| Camera, lens, ISO, aperture, shutter, focal length | The Info panel in Photos, from the file's EXIF |
+| Caption | The caption of the Photos asset, and IPTC in the file |
+| Title, keywords, creator, copyright | IPTC and XMP in the file |
+| 4 or 5 stars | A **Favourite** in Photos |
+
+What the file already says wins: what a camera wrote into the original is a better account of the photo than Adobe's JSON copy of it, so only the gaps are filled. Writing them does not re-encode the image, so it costs no quality. Titles and keywords stay in the file rather than reaching Photos itself — PhotoKit can set a photo's date, place and favourite flag, and nothing else — so Photos shows the caption but not the keywords, and both survive an export.
+
+Only photos synced from now on are described this way. A photo already in the ledger is never synced again, so it keeps the metadata it was imported with.
+
+#### Capture time and time zones
+
+Lightroom reports a capture time the way EXIF does, as a wall-clock reading with no time zone: `2024-09-18T15:55:12` is a quarter to four in the afternoon, but not *where*. Read in whichever zone the syncing Mac happens to be in, a photo shot in Tokyo and synced from California lands eight hours out.
+
+The downloaded file usually knows better, because EXIF 2.31 records the zone the camera was set to in `OffsetTimeOriginal`, so that is what the capture time is read in when the file carries it. Without it there is nothing better to go on than the Mac's own zone, which is what the app has always used. `lrsync-check` prints `(no zone; read in this Mac's)` for the photos where this applies.
 
 ### The Photos album
 
@@ -203,7 +227,9 @@ The download call is exactly what the gallery's *Download* button does. For phot
 
 The rendition call is what the gallery shows on screen. Each asset in the listing carries a `/rels/rendition_type/2048` link, and the file behind it is already built, so the **Small** size skips the download host altogether and arrives in a fraction of the time. Nothing above 2048 px is offered that way, so the larger sizes take the full-size download and are scaled down on the Mac. A rendition that cannot be fetched is not fatal: the app logs it and falls back to the full-size download.
 
-On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest`), sets the capture date, adds it to the chosen album, and records the Photos identifier in the ledger. Before importing, it looks for an existing asset with `PHAsset.fetchAssets` narrowed by creation date, comparing each candidate's original file name from `PHAssetResource`.
+The album listing also carries the photo's `payload.xmp` (the original's XMP packet, by namespace), `payload.location` and `payload.ratings`. That is where the [metadata](#metadata) comes from for a photo whose file arrived without it.
+
+On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest`), sets the capture date, the location and the favourite flag, adds it to the chosen album, and records the Photos identifier in the ledger. Before importing, it fills the gaps in the file's own EXIF, IPTC and GPS with ImageIO, copying the compressed image across untouched rather than re-encoding it. Before all that, it looks for an existing asset with `PHAsset.fetchAssets` narrowed by creation date, comparing each candidate's original file name from `PHAssetResource`.
 
 ## Limits
 
@@ -211,6 +237,7 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 - **Sharing by link means anyone with the link can view and download the album.** The link is unguessable, but treat it as a secret. Invite-only shares cannot be read without an Adobe login.
 - Photos synced to Adobe's cloud from Lightroom Classic exist there only as smart previews, so they arrive at 2048 px on the long edge whatever size you choose. The log says when that happens.
 - You get a rendered JPEG, not the RAW original. Videos and Live Photos are skipped.
+- Photos can be given a date, a place and a favourite flag through PhotoKit, and nothing else. A title or a keyword can only travel inside the file, where Photos does not show it.
 - A photo synced at one size is never synced again at another; the ledger has already recorded it.
 - The app polls with one small JSON request per interval, and only contacts the download host for new photos. The default is every 15 minutes; the control accepts up to 240 minutes, 48 hours or 30 days.
 - Not affiliated with, or endorsed by, Adobe or Apple.
@@ -221,7 +248,7 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 Sources/LightroomSyncCore    platform-independent logic: share-link parsing, gallery client,
                              sync policy and settings, ledger, engine. Builds and tests on Linux too.
 Sources/LightroomSync        the macOS menu bar app (SwiftUI MenuBarExtra + PhotoKit,
-                             ImageIO for scaling photos down to the chosen size)
+                             ImageIO for scaling photos down and for writing their metadata)
 Sources/lrsync-check         command-line diagnostics
 Tests/LightroomSyncCoreTests unit tests, with captured (anonymized) gallery responses as fixtures
 Resources/AppIcon.icns       the app icon, generated by scripts/make-icon.py

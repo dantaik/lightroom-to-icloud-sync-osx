@@ -85,6 +85,16 @@ public enum AdobeDate {
         return calendar.date(from: components)
     }
 
+    /// Whether the timestamp names its own time zone, rather than being a bare wall-clock reading.
+    /// A capture date without one has to be given a zone from somewhere else; see ``CaptureTime``.
+    public static func hasExplicitZone(_ string: String?) -> Bool {
+        guard let string = string?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        guard string.count > 19 else { return false }
+        let suffix = String(string.dropFirst(19)).drop { $0 == "." || $0.isNumber }
+        if suffix.isEmpty { return false }
+        return suffix == "Z" || parseOffset(String(suffix)) != nil
+    }
+
     private static func parseOffset(_ text: String) -> Int? {
         guard let sign = text.first, sign == "+" || sign == "-" else { return nil }
         let body = text.dropFirst().replacingOccurrences(of: ":", with: "")

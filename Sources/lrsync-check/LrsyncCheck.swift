@@ -47,10 +47,13 @@ struct LrsyncCheck {
                 let original = "\(photo.originalWidth ?? 0)×\(photo.originalHeight ?? 0)"
                 let edited = "\(photo.croppedWidth ?? 0)×\(photo.croppedHeight ?? 0)"
                 print("  • \(photo.fileName ?? photo.assetID) [\(photo.subtype)] original \(original), edited \(edited), edits: \(photo.hasEdits ? "yes" : "no")")
-                print("      asset \(photo.assetID) captured \(format(photo.captureDate)) added \(format(photo.addedToAlbumAt)) last edit \(format(photo.lastEditedAt))")
+                let zoneless = photo.rawCaptureDate.map { !AdobeDate.hasExplicitZone($0) } ?? false
+                let captured = "\(format(photo.captureDate))\(zoneless ? " (no zone; read in this Mac's)" : "")"
+                print("      asset \(photo.assetID) captured \(captured) added \(format(photo.addedToAlbumAt)) last edit \(format(photo.lastEditedAt))")
                 print("      in Photos it is looked up as \(photo.expectedPhotosFileName ?? "?")")
                 let renditions = photo.renditionHrefs.keys.sorted().joined(separator: ", ")
                 print("      renditions Lightroom holds: \(renditions.isEmpty ? "none" : renditions)")
+                print("      metadata the share exposes: \(describe(photo.metadata))")
             }
 
             if let downloadDirectory {
@@ -76,6 +79,33 @@ struct LrsyncCheck {
             return 1
         }
         return exitCode
+    }
+
+    /// What of the photo's description the share is willing to hand out, which is what the app can
+    /// carry into Photos. A share that lists nothing here is why a synced photo has no keywords.
+    private static func describe(_ metadata: PhotoMetadata) -> String {
+        var parts: [String] = []
+        if let title = metadata.title { parts.append("title “\(title)”") }
+        if let caption = metadata.caption { parts.append("caption “\(caption)”") }
+        if !metadata.keywords.isEmpty { parts.append("keywords \(metadata.keywords.joined(separator: "/"))") }
+        if let creator = metadata.creator { parts.append("by \(creator)") }
+        if metadata.copyright != nil { parts.append("copyright") }
+        let camera = [metadata.cameraMake, metadata.cameraModel].compactMap { $0 }.joined(separator: " ")
+        if !camera.isEmpty { parts.append(camera) }
+        if let lens = metadata.lens { parts.append("lens \(lens)") }
+        if let iso = metadata.iso { parts.append("ISO \(iso)") }
+        if let fNumber = metadata.fNumber { parts.append(String(format: "f/%.1f", fNumber)) }
+        if let exposureTime = metadata.exposureTime, exposureTime > 0 {
+            parts.append(exposureTime < 1 ? "1/\(Int((1 / exposureTime).rounded()))s" : String(format: "%.1fs", exposureTime))
+        }
+        if let focalLength = metadata.focalLength { parts.append(String(format: "%.0fmm", focalLength)) }
+        if let location = metadata.location {
+            parts.append(String(format: "at %.5f, %.5f", location.latitude, location.longitude))
+        }
+        if let rating = metadata.rating {
+            parts.append("\(rating)★\(metadata.isFavorite ? " (a Favourite in Photos)" : "")")
+        }
+        return parts.isEmpty ? "none" : parts.joined(separator: ", ")
     }
 
     private static func format(_ date: Date?) -> String {
