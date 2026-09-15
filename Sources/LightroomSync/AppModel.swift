@@ -102,6 +102,7 @@ final class AppModel: ObservableObject {
     private let bridge: EventBridge
     private var ledger: Ledger?
     private var engine: SyncEngine?
+    private let aboutWindow = AboutWindow()
     private var loopTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
     private var lastAttemptAt: Date?
@@ -252,6 +253,10 @@ final class AppModel: ObservableObject {
             bridge.log(.error, "Could not change login item: \(error.localizedDescription)")
             launchAtLogin = LoginItem.isEnabled
         }
+    }
+
+    func showAbout() {
+        aboutWindow.show()
     }
 
     func openLog() {

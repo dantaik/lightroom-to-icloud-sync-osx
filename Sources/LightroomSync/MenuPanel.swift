@@ -235,6 +235,10 @@ struct MenuPanel: View {
             }
             .help("Every check writes what it did to ~/Library/Logs/LightroomSync/sync.log")
 
+            Button("About") { model.showAbout() }
+                .buttonStyle(.link)
+                .help("What this app does, what it cannot do, and where the source lives")
+
             Spacer(minLength: 0)
 
             Button("Quit") { model.quit() }
