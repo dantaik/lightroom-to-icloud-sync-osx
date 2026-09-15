@@ -369,20 +369,84 @@ extension SyncEngineTests {
         XCTAssertGreaterThan(query.dateTolerance, 24 * 3600, "a time zone difference must not break the match")
     }
 
-    func testPhotosCheckRunsBeforeTheWaitingRules() async throws {
+    /// The Photos lookup scans every asset in the library within a day of the capture date, so a
+    /// photo that the waiting rules are going to hold back must not pay for one on every pass.
+    func testTheWaitingRulesRunBeforeThePhotosCheck() async throws {
         let harness = try makeHarness()
         defer { try? FileManager.default.removeItem(at: harness.directory) }
         let now = Date()
-        // Just added, so the waiting rules would normally hold it back.
+        // Just added, so the waiting rules hold it back.
         harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
             assetEntry(id: "recent", fileName: "a.jpg", added: now.addingTimeInterval(-30)),
         ]))
         harness.photoLibrary.identifiers["a.jpg"] = "existing-local-id"
 
         let report = try await harness.engine.run(config(), now: now)
-        XCTAssertEqual(report.foundInPhotos, 1)
-        XCTAssertEqual(report.pending, 0)
+        XCTAssertEqual(report.pending, 1)
+        XCTAssertEqual(report.foundInPhotos, 0)
+        XCTAssertTrue(harness.photoLibrary.queries.isEmpty, "a photo that is not eligible costs no library scan")
+        XCTAssertFalse(harness.ledger.contains(assetID: "recent"))
+
+        // Once it is eligible, the lookup happens and finds it.
+        let later = try await harness.engine.run(config(), now: now.addingTimeInterval(16 * 60))
+        XCTAssertEqual(later.foundInPhotos, 1)
+        XCTAssertEqual(later.pending, 0)
+        XCTAssertEqual(harness.photoLibrary.queries.count, 1)
         XCTAssertTrue(harness.ledger.contains(assetID: "recent"))
+    }
+
+    /// The wait for first edits used to be the check interval itself, so checking once a day also
+    /// held every new photo back for a day before it was even eligible.
+    func testALongCheckIntervalDoesNotHoldPhotosBackBeyondTheCap() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "a.jpg", added: now.addingTimeInterval(-20 * 60)),
+        ]))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+        let daily = SyncConfiguration(shareLink: "https://lightroom.adobe.com/shares/\(share)",
+                                      photosAlbumName: "Lightroom", checkInterval: 24 * 3600)
+
+        let report = try await harness.engine.run(daily, now: now)
+        XCTAssertEqual(report.synced, 1, "20 minutes in the album is past the cap, whatever the interval")
+        XCTAssertEqual(report.pending, 0)
+    }
+
+    func testTheReportSaysHowLongThePassAndItsStepsTook() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        oneOldPhoto(harness, cropped: (4000, 3000))
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000)
+
+        let report = try await harness.engine.run(config())
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertGreaterThan(report.duration, .zero)
+        XCTAssertGreaterThan(report.timings.listing, .zero)
+        XCTAssertEqual(report.timings.photosLookups, 1)
+        XCTAssertEqual(report.timings.downloads, 1)
+        XCTAssertEqual(report.timings.imports, 1)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("Synced P1000123.DNG") && $0.contains(" in ") },
+                      "the per-photo line carries its own breakdown")
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("Pass took") },
+                      "the pass ends with where its time went")
+    }
+
+    /// A photo the waiting rules hold back is never looked up or downloaded, so it must not be
+    /// counted as either.
+    func testAWaitingPhotoIsNotCountedInTheTimings() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let now = Date()
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "recent", fileName: "a.jpg", added: now.addingTimeInterval(-30)),
+        ]))
+
+        let report = try await harness.engine.run(config(), now: now)
+        XCTAssertEqual(report.pending, 1)
+        XCTAssertEqual(report.timings.photosLookups, 0)
+        XCTAssertEqual(report.timings.downloads, 0)
+        XCTAssertEqual(report.timings.imports, 0)
     }
 
     func testFailingPhotosCheckFallsBackToSyncing() async throws {

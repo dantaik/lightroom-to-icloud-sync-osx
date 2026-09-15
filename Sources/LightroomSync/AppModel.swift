@@ -409,7 +409,7 @@ final class AppModel: ObservableObject {
             lastSyncAt = Date()
             syncedCount = ledger?.syncedCount ?? syncedCount
             phase = .idle
-            var summary = "Check finished: \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed"
+            var summary = "Check finished in \(Stopwatch.describe(report.duration)): \(report.synced) synced, \(report.pending) waiting, \(report.failed) failed"
             if report.foundInPhotos > 0 { summary += ", \(report.foundInPhotos) already in Photos" }
             if report.refiled > 0 { summary += ", \(report.refiled) put back into “\(settings.photosAlbumName)”" }
             bridge.log(.info, summary)
