@@ -119,7 +119,7 @@ final class SyncEngineConcurrencyTests: XCTestCase {
             fake.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/p\(index)",
                      headers: ["content-type": "image/jpeg",
                                "content-disposition": "attachment; filename=\"p\(index).jpg\""],
-                     body: fakeJPEG(width: 4000, height: 3000))
+                     body: fakeJPEG(width: 4000, height: 3000, picture: "p\(index)"))
         }
         fake.setJSON(assetsURL, assetsPageJSON(entries: entries))
         let importer = FakeImporter()
@@ -197,6 +197,40 @@ final class SyncEngineConcurrencyTests: XCTestCase {
         XCTAssertEqual(report.synced, 1)
         XCTAssertEqual(report.duplicates, 4)
         XCTAssertEqual(harness.importer.requests.count, 1, "the same original was imported once")
+    }
+
+    /// The same photograph can reach the album as two assets that share no `sha256` — Lightroom
+    /// reports none at all for some imports, and a different one for each copy of others. Then the
+    /// only thing saying they are one photograph is the file name and capture time, which is what
+    /// the Photos lookup searches the library on. That lookup cannot see a photo that is still
+    /// downloading, so fetching several at once has to hold the second one back just as it does
+    /// for a shared original. Before it did, both were imported: one photo, twice in Photos, under
+    /// the same file name and the same metadata.
+    func testTheSamePhotographIsNotFetchedTwiceInParallelWithoutAHash() async throws {
+        let harness = try makeHarness(photoCount: 2)
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.fake.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0100.NEF", added: old, edited: old),
+            assetEntry(id: "p2", fileName: "DSC_0100.NEF", added: old, edited: old),
+        ]))
+        // Lightroom names the JPEG it serves after the original, whichever asset asked for it.
+        for id in ["p1", "p2"] {
+            harness.fake.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/\(id)",
+                             headers: ["content-type": "image/jpeg",
+                                       "content-disposition": "attachment; filename=\"DSC_0100.jpg\""],
+                             // Deliberately not the same bytes: it is the file name and capture
+                             // time being tested here, not the content hash.
+                             body: fakeJPEG(width: 4000, height: 3000, picture: id))
+        }
+
+        let report = try await makeEngine(harness).run(config(concurrency: 5))
+        XCTAssertEqual(harness.importer.requests.count, 1, "the same photograph reached Photos once")
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.duplicates, 1)
+        XCTAssertEqual(harness.ledger.state.entries["p2"]?.photosLocalIdentifier,
+                       harness.ledger.state.entries["p1"]?.photosLocalIdentifier,
+                       "both assets are recorded against the one photo in Photos")
     }
 
     func testProgressCountsEveryCandidateOnce() async throws {

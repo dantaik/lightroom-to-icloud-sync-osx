@@ -37,7 +37,7 @@ make install                          # copies it to /Applications
 open /Applications/LightroomSync.app  # the icon appears in the menu bar
 ```
 
-`make app` compiles a release build, assembles the `.app` bundle with its icon and `Info.plist`, and signs it ad hoc. There is nothing to configure and no dependencies to fetch: the package has none.
+`make app` compiles a release build, assembles the `.app` bundle with its icon and `Info.plist`, and signs it ad hoc. There is nothing to configure. One dependency is fetched on the first build: Apple's [swift-crypto](https://github.com/apple/swift-crypto), for the SHA-256 behind the duplicate check. It is used on Linux as well as macOS, where CryptoKit is not available.
 
 A few things worth knowing:
 
@@ -124,7 +124,10 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 - A photo becomes eligible once it has been in the shared album for at least the check interval, up to a limit of 15 minutes. That leaves you time to finish your first edits before the version is captured, without a long interval also becoming a long delay: checking once a day means looking once a day, not holding every new photo back for a day.
 - A photo edited within the last two minutes waits for the next check, so an edit in progress is not captured half done.
 - Once synced, a photo is recorded in a local ledger and is **never synced again**, however often it is edited later. Removing it from the Lightroom album or from Photos does not resync it.
-- If the same original (same file hash) appears twice in the album, it is imported once.
+- If the same photograph appears twice in the album, it is imported once. Three things can say it is the same one, and the second copy is recorded against the photo already in Photos rather than imported again:
+  1. **The original's hash**, as Lightroom reports it in the album listing. Free, and settles the question before anything is downloaded.
+  2. **The same original file name within a day of the same capture time** — the match the Photos lookup makes against the library. Also free, and it covers the assets Lightroom reports no hash for, or a different hash for each copy.
+  3. **The picture's own hash**, if it gets that far: a SHA-256 of the downloaded JPEG with every metadata segment left out, so two copies match however differently they are described, and whatever their file names. This one costs a download to reach, so it saves the duplicate in Photos rather than the work — but it is the only one that can compare the photographs themselves. See [The content hash](#the-content-hash).
 - Once a photo is eligible, and before downloading it, the app asks Photos whether it is already there. See [Using two Macs](#using-two-macs). The waiting rules are applied first, because that lookup searches the library around the photo's capture date and a photo that is not eligible yet would pay for one on every check until it was.
 - The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** checks immediately and ignores both delays.
@@ -152,9 +155,24 @@ Changing the size affects photos synced from then on. A photo already in the led
 
 Lightroom builds each full-size photo when it is asked for, so a check spends nearly all of its time waiting rather than working — on a large album, hours of it. **Fetch at once** (1–10, default 5) sets how many photos are downloaded in parallel, which overlaps that waiting. On a backlog it is close to a straight division: five at once finishes in about a fifth of the time.
 
-Only the fetching is parallel. Importing into Photos and writing the ledger stay strictly one at a time and in order, because Photos serializes its own changes anyway and the ledger is a single file rewritten whole — and because the duplicate checks read the ledger before acting on it, so running them in parallel could import the same original twice.
+Only the fetching is parallel. Importing into Photos and writing the ledger stay strictly one at a time and in order, because Photos serializes its own changes anyway and the ledger is a single file rewritten whole — and because the duplicate checks read the ledger before acting on it, so running them in parallel could import the same photograph twice.
+
+For the same reason, two photos that would answer each other's duplicate check are never fetched at the same time: the second waits for the first to land and is then checked against it. Both identities count here, the file hash and the file name, since the entry that answers either one — and the photo the Photos lookup would find — only exists once a fetch has been imported.
 
 Set it to 1 to turn the overlap off. Lower it if the log says Lightroom asked the app to wait before serving a photo: that means the share is being asked for more at once than it will give.
+
+### The content hash
+
+Lightroom's own `sha256` is the hash of the original *as it was imported*, and it arrives in the album listing — which is what makes it worth having: a duplicate it recognizes costs nothing, because nothing has been downloaded yet. But it is not always there, and not always the same for two copies of one photograph.
+
+So once a photo has been downloaded, and just before it is handed to Photos, it is hashed again — this time by its picture alone. Every metadata segment is left out (`APP0`–`APP15`, holding JFIF, EXIF, XMP and the ICC profile, and `COM` comments); what is hashed is the frame, quantization and Huffman tables, the scan header and the entropy-coded picture. Two copies of one photograph therefore match however differently they are described, or not described at all, and whatever they are called. If the hash is already in the ledger, the download is thrown away and the asset is recorded against the photo already in Photos.
+
+Two things this deliberately does not do:
+
+- It does not save the download. The check needs the file, and Lightroom builds each full-size photo on demand — so this catches the photo arriving in Photos a second time, not the time spent fetching it.
+- It does not carry across a change of [photo size](#photo-size). The same photograph at 2048 px and at 6016 px is not the same file, so not the same hash. The two checks above still apply.
+
+A file that does not parse cleanly as a JPEG simply has no content hash, and falls back on the checks that need none.
 
 ### Metadata
 
@@ -199,7 +217,7 @@ Two things this does not cover:
 - Run the app on one Mac at a time. Two Macs checking the same album within the same minute can both import the same photo before either one appears in the other's library.
 - Quitting mid-check is safe. Each photo is recorded as it is imported, so the next check carries on from there; part-finished downloads are thrown away and fetched again. A photo that reached Photos just before the app quit is found there by the next check and recorded without being downloaded again.
 
-A photo without a capture date is not looked up at all, since the search would have to scan the whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives.
+A photo without a capture date is not looked up at all, since the search would have to scan the whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives. The ledger makes the same name-and-capture-time match on its own record first, so a photograph this Mac has already synced is still caught when the library cannot be searched.
 
 ## Where things are kept
 

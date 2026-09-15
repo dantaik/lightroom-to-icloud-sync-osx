@@ -16,16 +16,39 @@ enum Fixtures {
     }
 }
 
-/// Minimal JPEG with an APP0 segment followed by a baseline SOF0 header.
-func fakeJPEG(width: Int, height: Int) -> Data {
+/// Minimal JPEG: an APP0 segment, whatever metadata segments were asked for, a baseline SOF0
+/// header, a scan, and EOI.
+///
+/// `picture` seeds the scan's bytes, so two files stand for the same photograph only when it
+/// matches — which is exactly what the content hash is there to tell apart. Photos in a test are
+/// given distinct pictures for the same reason real ones have them.
+func fakeJPEG(width: Int, height: Int, picture: String = "",
+              metadata: [(marker: UInt8, payload: [UInt8])] = []) -> Data {
     func be16(_ value: Int) -> [UInt8] { [UInt8((value >> 8) & 0xFF), UInt8(value & 0xFF)] }
     var bytes: [UInt8] = [0xFF, 0xD8]
     let app0: [UInt8] = Array("JFIF\0".utf8) + [1, 1, 0, 0, 1, 0, 1, 0, 0]
     bytes += [0xFF, 0xE0] + be16(app0.count + 2) + app0
+    for segment in metadata {
+        bytes += [0xFF, segment.marker] + be16(segment.payload.count + 2) + segment.payload
+    }
     let frame: [UInt8] = [8] + be16(height) + be16(width) + [3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]
     bytes += [0xFF, 0xC0] + be16(frame.count + 2) + frame
+    let scanHeader: [UInt8] = [3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0]
+    bytes += [0xFF, 0xDA] + be16(scanHeader.count + 2) + scanHeader
+    bytes += fakeScan(for: picture)
     bytes += [0xFF, 0xD9]
     return Data(bytes)
+}
+
+/// Stands in for the entropy-coded picture: bytes that differ per photograph, and that never look
+/// like a marker, so a parser walking the file is not led off the end of the scan.
+private func fakeScan(for picture: String) -> [UInt8] {
+    var value: UInt64 = 0xcbf2_9ce4_8422_2325
+    for byte in picture.utf8 { value = (value ^ UInt64(byte)) &* 0x1000_0000_01b3 }
+    return (0..<32).map { index in
+        value = (value ^ UInt64(index)) &* 0x1000_0000_01b3
+        return UInt8((value >> 24) & 0x7F)
+    }
 }
 
 /// Canned HTTP responses keyed by absolute URL string.
@@ -83,7 +106,7 @@ final class FakeImporter: PhotoImporting {
         try? FileManager.default.removeItem(at: request.fileURL)
         identifiers += 1
         let identifier = "local-\(identifiers)"
-        library?.file(identifier, inAlbum: request.albumName)
+        library?.imported(identifier, request: request)
         return identifier
     }
 }
@@ -135,8 +158,13 @@ final class FakeMetadataWriter: PhotoMetadataWriting {
 
 /// Stands in for the Photos library: which assets it holds and which album each one is in.
 final class FakePhotoLibrary: PhotoLibraryAccess {
-    /// Local identifiers keyed by the file name the library is asked about.
+    /// Local identifiers keyed by the file name the library is asked about. Set up by a test to
+    /// say the library already held a photo before the pass; matched on the name alone.
     var identifiers: [String: String] = [:]
+    /// What importing put here, the way PhotoKit does: a photo is in the library from the moment
+    /// it is imported, and the next lookup finds it. Matched the way the real library is searched,
+    /// on the original file name and a capture date within the query's tolerance.
+    private(set) var importedAssets: [(fileName: String, captureDate: Date?, identifier: String)] = []
     /// Album name to the identifiers currently in it.
     var albums: [String: Set<String>] = [:]
     /// Assets the user has deleted from the library outright.
@@ -150,7 +178,12 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
     func findExistingAsset(matching query: PhotoMatchQuery) async throws -> String? {
         queries.append(query)
         if let error { throw error }
-        return identifiers[query.fileName]
+        if let identifier = identifiers[query.fileName] { return identifier }
+        return importedAssets.first { asset in
+            guard asset.fileName.caseInsensitiveCompare(query.fileName) == .orderedSame,
+                  let captureDate = asset.captureDate else { return false }
+            return abs(captureDate.timeIntervalSince(query.captureDate)) <= query.dateTolerance
+        }?.identifier
     }
 
     func albumExists(named name: String) async throws -> Bool {
@@ -165,6 +198,15 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
         let live = identifiers.filter { !deletedIdentifiers.contains($0) }
         albums[name, default: []].formUnion(live)
         return live
+    }
+
+    /// What PhotoKit does when a photo is imported: the library holds it from then on, under the
+    /// original file name and creation date it was imported with, and it is filed into the album.
+    func imported(_ identifier: String, request: PhotoImportRequest) {
+        if let fileName = request.originalFileName {
+            importedAssets.append((fileName, request.captureDate, identifier))
+        }
+        file(identifier, inAlbum: request.albumName)
     }
 
     /// What PhotoKit does when a photo is imported with an album name.
