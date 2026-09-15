@@ -1,0 +1,66 @@
+name: CI
+
+# The core library and its tests are platform-independent, so the bulk of the signal comes
+# from Linux, where a runner starts in seconds. The macOS job covers what Linux cannot:
+# the SwiftUI and PhotoKit code in Sources/LightroomSync, and the .app bundling that
+# scripts/build-app.sh performs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A branch only needs its newest run; supersede whichever one is still in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    # The toolchain ships in the image, so nothing has to be installed on the runner.
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: swift --version
+
+      # Builds every target, including lrsync-check and the NonMacMain stub that stands
+      # in for the macOS-only app, so a break in either shows up here rather than on macOS.
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  macos:
+    name: Tests and app build (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: swift --version
+
+      # Goes through scripts/run-tests.sh, the same entry point the README documents.
+      - name: Test
+        run: make test
+
+      - name: Build lrsync-check
+        run: swift build --product lrsync-check
+
+      # Release build, .app assembly and ad-hoc code signing: the path `make install` takes.
+      - name: Build LightroomSync.app
+        run: make app
+
+      - name: Check the bundle
+        run: |
+          test -x dist/LightroomSync.app/Contents/MacOS/LightroomSync
+          test -s dist/LightroomSync.app/Contents/Info.plist
+          test -s dist/LightroomSync.app/Contents/Resources/AppIcon.icns
