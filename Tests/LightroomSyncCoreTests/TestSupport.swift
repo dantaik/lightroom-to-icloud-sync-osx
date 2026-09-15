@@ -40,6 +40,9 @@ final class FakeTransport: HTTPTransport {
     var responses: [String: Canned] = [:]
     var requests: [URL] = []
     var lastHeaders: [String: String] = [:]
+    /// Photos are fetched several at a time, so the recording below happens on several tasks at
+    /// once. `responses` is only written during set-up, so only the recording needs guarding.
+    private let lock = NSLock()
 
     func set(_ url: String, status: Int = 200, headers: [String: String] = [:], body: Data = Data(), finalURL: URL? = nil) {
         responses[url] = Canned(status: status, headers: headers, body: body, finalURL: finalURL)
@@ -50,8 +53,10 @@ final class FakeTransport: HTTPTransport {
     }
 
     func get(_ url: URL, headers: [String: String]) async throws -> HTTPResponse {
-        requests.append(url)
-        lastHeaders = headers
+        lock.withLock {
+            requests.append(url)
+            lastHeaders = headers
+        }
         guard let canned = responses[url.absoluteString] else {
             return HTTPResponse(status: 404, headers: [:], body: Data("not canned: \(url.absoluteString)".utf8), finalURL: url)
         }
@@ -88,9 +93,10 @@ final class FakeImporter: PhotoImporting {
 final class FakeResizer: PhotoResizing {
     var requests: [(url: URL, maxLongEdge: Int)] = []
     var error: Error?
+    private let lock = NSLock()
 
     func resized(fileAt url: URL, maxLongEdge: Int) throws -> URL {
-        requests.append((url, maxLongEdge))
+        lock.withLock { requests.append((url, maxLongEdge)) }
         if let error { throw error }
         guard let size = JPEGInfo.pixelSize(ofFileAt: url), size.longEdge > maxLongEdge else { return url }
         let scale = Double(maxLongEdge) / Double(size.longEdge)
@@ -112,11 +118,12 @@ final class FakeMetadataWriter: PhotoMetadataWriting {
     var error: Error?
     /// Set to write a new file next to the one handed over, the way the real writer does.
     var writesNewFile = false
+    private let lock = NSLock()
 
     func embeddedMetadata(fileAt url: URL) -> EmbeddedPhotoMetadata { embedded }
 
     func write(_ metadata: PhotoMetadata, toFileAt url: URL) throws -> URL {
-        written.append(metadata)
+        lock.withLock { written.append(metadata) }
         if let error { throw error }
         guard writesNewFile else { return url }
         let destination = url.deletingLastPathComponent()
@@ -170,9 +177,17 @@ final class FakePhotoLibrary: PhotoLibraryAccess {
 final class RecordingSink: SyncEventSink {
     var lines: [String] = []
     var progress: [(Int, Int)] = []
+    /// The protocol says these are called from arbitrary threads, and since photos are fetched
+    /// several at a time they genuinely are.
+    private let lock = NSLock()
 
-    func log(_ level: LogLevel, _ message: String) { lines.append("[\(level.rawValue)] \(message)") }
-    func progress(completed: Int, total: Int) { progress.append((completed, total)) }
+    func log(_ level: LogLevel, _ message: String) {
+        lock.withLock { lines.append("[\(level.rawValue)] \(message)") }
+    }
+
+    func progress(completed: Int, total: Int) {
+        lock.withLock { progress.append((completed, total)) }
+    }
 }
 
 func makeTemporaryDirectory() throws -> URL {

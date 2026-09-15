@@ -101,7 +101,7 @@ plutil -extract CFBundleIconFile raw /Applications/LightroomSync.app/Contents/In
 1. **Share the album from Lightroom.** Open the album in Lightroom (desktop, web or mobile), choose *Share & Invite*, set *Link access* to **Anyone can view**, and under *Link settings* turn on **Allow downloads**. Copy the link; it looks like `https://adobe.ly/…` or `https://lightroom.adobe.com/shares/…`.
 2. Click the menu bar icon and paste the link into *Lightroom album share link*.
 3. Optionally name a **Photos album**. The app creates it if it does not exist. Leave it empty to add photos to the library only.
-4. Choose a **Photo size**. Large is the default; see [Photo size](#photo-size).
+4. Choose a **Photo size**. Large is the default; see [Photo size](#photo-size). **Fetch at once** below it decides how many photos are downloaded in parallel; 5 is the default and is usually right.
 5. Set **Check every** to a number and a unit: minutes, hours or days. Turn on **Start at login** if you want it running all the time.
 6. Press **Save**. The app then reads the album and confirms its name and that downloads are allowed.
 
@@ -147,6 +147,14 @@ Large, Medium and Original come from the same full-size download. Large and Medi
 
 Changing the size affects photos synced from then on. A photo already in the ledger is never synced again, so it stays at the size it was imported at.
 
+### Fetch at once
+
+Lightroom builds each full-size photo when it is asked for, so a check spends nearly all of its time waiting rather than working — on a large album, hours of it. **Fetch at once** (1–10, default 5) sets how many photos are downloaded in parallel, which overlaps that waiting. On a backlog it is close to a straight division: five at once finishes in about a fifth of the time.
+
+Only the fetching is parallel. Importing into Photos and writing the ledger stay strictly one at a time and in order, because Photos serializes its own changes anyway and the ledger is a single file rewritten whole — and because the duplicate checks read the ledger before acting on it, so running them in parallel could import the same original twice.
+
+Set it to 1 to turn the overlap off. Lower it if the log says Lightroom asked the app to wait before serving a photo: that means the share is being asked for more at once than it will give.
+
 ### Metadata
 
 A photo should arrive in Photos described the way it is described in Lightroom, so it turns up in a search for the lens you shot it with and sits in the right place on the map. The full-size download already carries most of that in its EXIF and XMP. The 2048 px rendition behind **Small** does not reliably: it is a preview Adobe generated, and what survives in it is Adobe's business. So the app carries the album listing's own copy of the metadata and fills in whatever the file is missing, at every size.
@@ -188,6 +196,7 @@ Two things this does not cover:
 
 - Let Photos finish syncing from iCloud on the second Mac before starting the app. Photos it has not received yet cannot be found, and would be imported again.
 - Run the app on one Mac at a time. Two Macs checking the same album within the same minute can both import the same photo before either one appears in the other's library.
+- Quitting mid-check is safe. Each photo is recorded as it is imported, so the next check carries on from there; part-finished downloads are thrown away and fetched again. A photo that reached Photos just before the app quit is found there by the next check and recorded without being downloaded again.
 
 A photo without a capture date is not looked up at all, since the search would have to scan the whole library; it is simply downloaded. If the Photos check fails (no permission, for example), the app logs a warning and syncs the photo: a duplicate is better than a photo that never arrives.
 
@@ -196,6 +205,7 @@ A photo without a capture date is not looked up at all, since the search would h
 | Path | What |
 |---|---|
 | `~/Library/Application Support/LightroomSync/ledger.json` | The record of synced photos. Delete it to make the app treat every photo as new. |
+| `~/Library/Application Support/LightroomSync/downloads/` | Photos being fetched right now. Nothing here is worth keeping: each check clears out whatever an interrupted one left behind. |
 | `~/Library/Logs/LightroomSync/sync.log` | What every check did, photo by photo. *Open log* opens it. |
 | macOS user defaults | The saved settings |
 
@@ -216,7 +226,9 @@ Most of that was Photos lookups (63%): every photo not yet in the ledger is sear
 library by capture date, which costs more the larger the library is.
 ```
 
-The steps are `listing` (reading the share and paging the album), `refiling`, `Photos lookups`, `downloads`, `resizing`, `metadata`, `imports` and `ledger`. Anything under a millisecond is left out. If `downloads` dominates, the [photo size](#photo-size) is the lever: **Small** takes a rendition Lightroom already holds and downloads nothing full-size.
+The steps are `listing` (reading the share and paging the album), `refiling`, `Photos lookups`, `downloads`, `resizing`, `metadata`, `imports` and `ledger`. Anything under a millisecond is left out. Because photos are fetched several at a time, the per-photo times can add up to more than the pass took.
+
+If `downloads` dominates, there are two levers: raise [**Fetch at once**](#fetch-at-once) to overlap more of the waiting, or drop the [photo size](#photo-size) to **Small**, which takes a rendition Lightroom already holds and downloads nothing full-size.
 
 #### lrsync-check
 
