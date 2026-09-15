@@ -1,0 +1,19 @@
+#if os(macOS)
+import Foundation
+import ServiceManagement
+
+/// Registers the app as a login item (macOS 13+).
+enum LoginItem {
+    static var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        if enabled {
+            try SMAppService.mainApp.register()
+        } else {
+            try SMAppService.mainApp.unregister()
+        }
+    }
+}
+#endif

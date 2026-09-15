@@ -1,0 +1,61 @@
+{
+ "base": "https://photos.adobe.io/v2/spaces/9aa831b1346b4570b93e8f07152b8dd5/",
+ "resources": [
+  {
+   "id": "085ca26978b34951bcbe917ba6d79297",
+   "type": "album",
+   "subtype": "collection",
+   "created": "2025-09-11T18:01:54.728480Z",
+   "updated": "2025-09-14T19:03:43.410747Z",
+   "revision_ids": [
+    "ba3f07ca3d47495fa158434e4671d60e",
+    "88a72cff445346548611eba97987348c",
+    "83a9fe7d63d94da3a684f658b9299e18",
+    "630587d797684bae8a9f7b36cc8e6971",
+    "2b4a04999fc8491c9154816e39bc093d",
+    "2ce4982768de40c38cd8a3edfcd81c51",
+    "aebad3d82e7f441a8c16f350c72b6d7b",
+    "a692171cb0db4bc890c237e6d0365b51",
+    "f18dceeb77cd450f87cfc59153deb031",
+    "911575c3d9444213893abfb3821caa11",
+    "353756274da847cdb38abc384cf8ea43",
+    "7f4b4035aba045088332f56aeaab65a8",
+    "e6cb0cc4c7ae49ad8d01221f206a498a",
+    "2ed4c6fd8c9744cea20694c917c6f47e",
+    "b0cdec5719064142b979c9e46b74dafc",
+    "13ee05202be44561921ddf7461580ec1",
+    "54dbc3223a9e45d7a81cd676ab596b27",
+    "ce7fe11f414b4c45a94094cf48c8d759",
+    "846bbf0caa5b49fd823953db5bb93bf8"
+   ],
+   "links": {
+    "self": {
+     "href": "albums/085ca26978b34951bcbe917ba6d79297"
+    },
+    "/rels/space_album_images_videos": {
+     "href": "albums/085ca26978b34951bcbe917ba6d79297/assets?embed=asset&subtype=image%3Bvideo"
+    }
+   },
+   "payload": {
+    "name": "September 14th 2025 Collection",
+    "userUpdated": "2025-09-14T19:03:35.650Z",
+    "hideInOrganize": false,
+    "userCreated": "2025-09-11T18:01:50.502Z",
+    "assetSortOrder": "customAsc",
+    "presentation": {
+     "explore": {
+      "styleId": "Dark",
+      "themeId": "Gallery",
+      "version": 1
+     },
+     "options": {
+      "showAuthor": true,
+      "showCaptions": false,
+      "showCover": false,
+      "showTitle": true
+     }
+    }
+   }
+  }
+ ]
+}
