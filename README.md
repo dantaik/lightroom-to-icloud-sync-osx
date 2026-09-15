@@ -128,6 +128,7 @@ Before the first Save the app does nothing at all: no checks, and no requests to
 - Once a photo is eligible, and before downloading it, the app asks Photos whether it is already there. See [Using two Macs](#using-two-macs). The waiting rules are applied first, because that lookup searches the library around the photo's capture date and a photo that is not eligible yet would pay for one on every check until it was.
 - The configured Photos album is repaired, not just filled. See [The Photos album](#the-photos-album).
 - **Sync now** checks immediately and ignores both delays.
+- While a check is running the Mac is kept awake, so a pass is not cut in half by the machine dozing off between one photo and the next. Only idle system sleep is held back, and only until the check finishes: the display still sleeps on its own schedule, closing the lid or choosing Sleep still sends the Mac to sleep, and on battery macOS may sleep through a check regardless. A pass cut short that way costs nothing but the work it had done; the next check picks those photos up again.
 - Videos are listed but skipped. Only photos are synced.
 - Each photo is capped at the [photo size](#photo-size) you chose, 6016 px on the long edge by default.
 - Each photo keeps what Lightroom knows about it. See [Metadata](#metadata).
@@ -273,6 +274,7 @@ On the Mac side the app imports each file with PhotoKit (`PHAssetCreationRequest
 - Photos can be given a date, a place and a favourite flag through PhotoKit, and nothing else. A title or a keyword can only travel inside the file, where Photos does not show it.
 - A photo synced at one size is never synced again at another; the ledger has already recorded it.
 - The app polls with one small JSON request per interval, and only contacts the download host for new photos. The default is every 15 minutes; the control accepts up to 240 minutes, 48 hours or 30 days.
+- The app cannot sync while the Mac is asleep, and it does not wake it to check. It holds sleep off for the length of a check it has already started; checks that came due while the Mac slept run within twenty seconds of it waking.
 - Not affiliated with, or endorsed by, Adobe or Apple.
 
 ## Project layout

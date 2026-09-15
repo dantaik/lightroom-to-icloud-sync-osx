@@ -136,6 +136,7 @@ final class AppModel: ObservableObject {
     private var ledger: Ledger?
     private var engine: SyncEngine?
     private let aboutWindow = AboutWindow()
+    private let sleepPreventer = SleepPreventer()
     private var loopTask: Task<Void, Never>?
     private var spinnerTask: Task<Void, Never>?
     private var validationTask: Task<Void, Never>?
@@ -413,7 +414,13 @@ final class AppModel: ObservableObject {
         lastAttemptAt = Date()
         phase = .syncing(completed: 0, total: 0)
         startSpinner()
-        defer { stopSpinner() }
+        // For as long as the icon spins the Mac is kept awake: a pass interrupted by sleep has
+        // to start over, and the next one sweeps away the downloads it had got as far as.
+        sleepPreventer.begin()
+        defer {
+            stopSpinner()
+            sleepPreventer.end()
+        }
         do {
             let report = try await engine.run(settings.syncConfiguration(ignoreDelays: ignoreDelays))
             lastReport = report
