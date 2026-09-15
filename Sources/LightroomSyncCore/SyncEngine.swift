@@ -63,10 +63,51 @@ public enum LogLevel: String {
     case info, warning, error
 }
 
+/// What a pass is doing before it has photos to count.
+///
+/// Every one of these is a wait with no number behind it — a redirect to follow, an album that
+/// pages, a Photos library that has to be opened and, on the first pass after the app starts,
+/// asked for permission. Until they are done the pass does not know how many photos it is going
+/// to sync, so all it can report is which one of them is running.
+///
+/// The raw values order the stages, which is the order `run` reports them in.
+public enum SyncStage: Int, Comparable, CustomStringConvertible, Sendable {
+    /// Following the share link to the share it names.
+    case resolvingLink = 0
+    /// Reading the share: its albums, and whether it allows downloads at all.
+    case readingShare = 1
+    /// Paging through the album's photos.
+    case listingAlbum = 2
+    /// Making sure the Photos album still holds what was already synced into it.
+    case refilingAlbum = 3
+    /// Clearing out whatever an interrupted pass left in the download directory.
+    case clearingDownloads = 4
+
+    /// What the panel says while this stage runs.
+    public var description: String {
+        switch self {
+        case .resolvingLink: return "Opening the share link…"
+        case .readingShare: return "Reading the share…"
+        case .listingAlbum: return "Listing the album…"
+        case .refilingAlbum: return "Checking the Photos album…"
+        case .clearingDownloads: return "Clearing unfinished downloads…"
+        }
+    }
+
+    public static func < (lhs: SyncStage, rhs: SyncStage) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 /// Receives progress and log lines from a sync pass. Called from arbitrary threads.
 public protocol SyncEventSink: AnyObject {
     func log(_ level: LogLevel, _ message: String)
     func progress(completed: Int, total: Int)
+    /// Which step of the run-up to the photos the pass is on. See ``SyncStage``.
+    func stage(_ stage: SyncStage)
+}
+
+public extension SyncEventSink {
+    /// A sink that only cares about the photos themselves need not follow the run-up to them.
+    func stage(_ stage: SyncStage) {}
 }
 
 public enum SyncEngineError: Error, LocalizedError, Equatable {
@@ -125,13 +166,16 @@ public final class SyncEngine {
         } catch {
             throw SyncEngineError.invalidShareLink(error.localizedDescription)
         }
+        sink?.stage(.resolvingLink)
         let (shareID, linkAlbumID) = try await client.resolve(link)
+        sink?.stage(.readingShare)
         let share = try await client.fetchShare(shareID: shareID)
         let album = try Self.chooseAlbum(from: share, preferred: config.preferredAlbumID ?? linkAlbumID)
         var report = SyncReport(shareID: shareID, albumID: album.id, albumName: album.name, startedAt: now)
 
         guard share.downloadsAllowed else { throw LightroomError.downloadsDisabled }
 
+        sink?.stage(.listingAlbum)
         let photos = try await client.listPhotos(shareID: shareID, albumID: album.id).filter(\.isImage)
         report.timings.listing = pass.elapsed
         report.photosInAlbum = photos.count
@@ -143,13 +187,19 @@ public final class SyncEngine {
         log(.info, "Album “\(album.name)”: \(photos.count) photos, \(candidates.count) not yet synced, at \(config.photoSize.shortDescription) (listed in \(Stopwatch.describe(report.timings.listing)))")
 
         let refiling = Stopwatch()
+        // Only with an album to keep in step: without one `refileIntoAlbum` returns at once, and
+        // announcing a step that is not going to run would be a lie the panel then has to show.
+        if albumName != nil { sink?.stage(.refilingAlbum) }
         await refileIntoAlbum(albumName, photos: photos, report: &report)
         report.timings.refiling = refiling.elapsed
 
         // Whatever a previous pass left behind when it was stopped mid-fetch. The directory is
         // this engine's alone and only one pass uses it at a time, so anything already in it is a
         // leftover. Several photos are now in flight at once, so a stop strands several files.
+        sink?.stage(.clearingDownloads)
         sweepDownloadDirectory()
+        // The last of the run-up: from here the pass has a number, and progress is a count rather
+        // than the name of a step.
         sink?.progress(completed: 0, total: candidates.count)
 
         let width = max(1, SyncSettings.clamp(downloadConcurrency: config.downloadConcurrency))

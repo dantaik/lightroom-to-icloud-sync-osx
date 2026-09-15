@@ -21,6 +21,11 @@ private final class EventBridge: SyncEventSink {
         let model = self.model
         Task { @MainActor in model?.updateProgress(completed: completed, total: total) }
     }
+
+    func stage(_ stage: SyncStage) {
+        let model = self.model
+        Task { @MainActor in model?.updateStage(stage) }
+    }
 }
 
 /// Saved settings live in UserDefaults, under the keys the first version used.
@@ -89,6 +94,9 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
 final class AppModel: ObservableObject {
     enum Phase: Equatable {
         case idle
+        /// A pass is running but has not counted its photos yet; see ``SyncStage``. Separate from
+        /// `syncing` because there is no progress to show, only the step that is running.
+        case preparing(SyncStage)
         case syncing(completed: Int, total: Int)
         case failed(String)
     }
@@ -178,9 +186,13 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived state for the UI
 
+    /// True for the whole of a pass, its run-up included: this is what stops a second pass
+    /// starting on top of one already running.
     var isSyncing: Bool {
-        if case .syncing = phase { return true }
-        return false
+        switch phase {
+        case .preparing, .syncing: return true
+        case .idle, .failed: return false
+        }
     }
 
     var hasUnsavedChanges: Bool { editor.hasUnsavedChanges }
@@ -211,7 +223,7 @@ final class AppModel: ObservableObject {
     var statusKind: StatusKind {
         if setupError != nil { return .failed }
         switch phase {
-        case .syncing: return .syncing
+        case .preparing, .syncing: return .syncing
         case .failed: return .failed
         case .idle:
             if !hasSavedSettings { return .unconfigured }
@@ -224,6 +236,8 @@ final class AppModel: ObservableObject {
     var statusLine: String {
         if let setupError { return setupError }
         switch phase {
+        case .preparing(let stage):
+            return stage.description
         case .syncing(let completed, let total):
             return total > 0 ? "Syncing \(completed) of \(total)…" : "Checking the album…"
         case .failed(let message):
@@ -315,10 +329,26 @@ final class AppModel: ObservableObject {
 
     // MARK: Internal updates (called through EventBridge)
 
+    /// The first of these also ends the run-up: once the photos have been counted there is a
+    /// number to show, so the panel stops naming steps.
     func updateProgress(completed: Int, total: Int) {
-        if case .syncing = phase {
+        switch phase {
+        case .preparing, .syncing:
             phase = .syncing(completed: completed, total: total)
+        case .idle, .failed:
+            break
         }
+    }
+
+    /// Moves the panel on to the next step of the run-up.
+    ///
+    /// Only forwards, and only while the run-up is still on. Each of these events is forwarded
+    /// onto the main actor as a task of its own, and tasks are not promised to run in the order
+    /// they were made, so an event that arrives late must not put the panel back a step — or, once
+    /// the photos are being counted, back to having no count at all.
+    func updateStage(_ stage: SyncStage) {
+        guard case .preparing(let current) = phase, stage >= current else { return }
+        phase = .preparing(stage)
     }
 
     // MARK: Reading the saved share link
@@ -412,7 +442,9 @@ final class AppModel: ObservableObject {
     private func runSync(ignoreDelays: Bool) async {
         guard let engine, let settings = editor.saved, settings.isConfigured, !isSyncing else { return }
         lastAttemptAt = Date()
-        phase = .syncing(completed: 0, total: 0)
+        // What the engine reports first, so the panel names a step from the outset rather than
+        // sitting silent through the share, the listing and the Photos album.
+        phase = .preparing(.resolvingLink)
         startSpinner()
         // For as long as the icon spins the Mac is kept awake: a pass interrupted by sleep has
         // to start over, and the next one sweeps away the downloads it had got as far as.
