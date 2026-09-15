@@ -72,11 +72,24 @@ The same tests also run on Linux, which is where the sync logic was developed an
 
 ### Regenerating the icon
 
-The icon is committed as `Resources/AppIcon.icns`, so building does not need Python. If you change the artwork in `scripts/make-icon.py`, regenerate it with:
+The icon is committed twice: as `Resources/AppIcon.iconset`, which `make app` hands to macOS's own `iconutil`, and as `Resources/AppIcon.icns`, used only if `iconutil` is unavailable. Building needs no Python. If you change the artwork in `scripts/make-icon.py`, regenerate both with:
 
 ```sh
 python3 -m pip install Pillow
 python3 scripts/make-icon.py
+```
+
+**If the app shows a blank or generic icon**, macOS is almost certainly serving a cached one: it caches icons per bundle, and a bundle that once had no icon keeps showing the blank one. `make install` clears it for you, or do it by hand:
+
+```sh
+make refresh-icon        # touches the bundle, re-registers it, restarts the Dock
+```
+
+To confirm the icon really is in the installed bundle:
+
+```sh
+ls -l /Applications/LightroomSync.app/Contents/Resources/AppIcon.icns
+plutil -extract CFBundleIconFile raw /Applications/LightroomSync.app/Contents/Info.plist
 ```
 
 ## Setting it up

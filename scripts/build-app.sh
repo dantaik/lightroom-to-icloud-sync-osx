@@ -25,13 +25,28 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
 cp scripts/Info.plist "$APP/Contents/Info.plist"
-cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# Prefer iconutil, which ships with macOS and produces the canonical .icns for the
+# iconset. The committed .icns is the fallback for building without it.
+ICON="$APP/Contents/Resources/AppIcon.icns"
+if command -v iconutil >/dev/null 2>&1 && [[ -d Resources/AppIcon.iconset ]]; then
+  echo "▸ Building the icon with iconutil"
+  iconutil --convert icns --output "$ICON" Resources/AppIcon.iconset
+else
+  echo "▸ Using the committed icon"
+  cp Resources/AppIcon.icns "$ICON"
+fi
+
+if [[ ! -s "$ICON" ]]; then
+  echo "The app icon is missing from the bundle: $ICON" >&2
+  exit 1
+fi
 
 IDENTITY="${CODESIGN_IDENTITY:--}"
 echo "▸ Code signing with identity: $IDENTITY"
 codesign --force --sign "$IDENTITY" --timestamp=none "$APP"
 
-echo "✓ Built $APP"
+echo "✓ Built $APP ($(du -h "$ICON" | cut -f1) icon)"
 echo "  Run it with:      open $APP"
 echo "  Install it with:  make install"

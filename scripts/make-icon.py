@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Draws the app icon and writes Resources/AppIcon.icns plus a preview PNG.
+"""Draws the app icon and writes Resources/AppIcon.iconset, AppIcon.icns and a preview.
 
 Run it only when the artwork changes; the generated files are committed, so building
 the app needs neither Python nor Pillow.
+
+Two forms of the icon are written. The .iconset folder is what macOS's own iconutil
+turns into an .icns at build time, which is the form Finder is guaranteed to read. The
+.icns here is written by hand as a fallback for building without iconutil.
 
     python3 -m pip install Pillow
     python3 scripts/make-icon.py
@@ -188,48 +192,62 @@ def render(size, simplified):
 
 # --- icns ----------------------------------------------------------------------------
 
-# Size in pixels, the icns type for it, and whether that size uses the simplified art.
-# Each pair of entries is one logical size at 1x and 2x, so a size never changes design
-# when the screen does.
+# Pixel size, the name iconutil expects in an .iconset, the icns element type, and whether
+# the size uses the simplified art. Each pair of rows is one logical size at 1x and 2x, so a
+# size never changes design when the screen does.
 ENTRIES = [
-    (16, b"icp4", True),    # 16pt
-    (32, b"ic11", True),    # 16pt @2x
-    (32, b"icp5", True),    # 32pt
-    (64, b"ic12", True),    # 32pt @2x
-    (128, b"ic07", False),  # 128pt
-    (256, b"ic13", False),  # 128pt @2x
-    (256, b"ic08", False),  # 256pt
-    (512, b"ic14", False),  # 256pt @2x
-    (512, b"ic09", False),  # 512pt
-    (1024, b"ic10", False), # 512pt @2x
+    (16, "icon_16x16.png", b"icp4", True),
+    (32, "icon_16x16@2x.png", b"ic11", True),
+    (32, "icon_32x32.png", b"icp5", True),
+    (64, "icon_32x32@2x.png", b"ic12", True),
+    (128, "icon_128x128.png", b"ic07", False),
+    (256, "icon_128x128@2x.png", b"ic13", False),
+    (256, "icon_256x256.png", b"ic08", False),
+    (512, "icon_256x256@2x.png", b"ic14", False),
+    (512, "icon_512x512.png", b"ic09", False),
+    (1024, "icon_512x512@2x.png", b"ic10", False),
 ]
 
 
-def write_icns(path, png_by_type):
-    """Writes an icns container. Each element is a type, a length, and PNG data."""
-    body = b"".join(
-        type_code + struct.pack(">I", len(data) + 8) + data
-        for type_code, data in png_by_type
-    )
+def write_icns(path, elements):
+    """Writes an icns container: a table of contents, then a typed element per image.
+
+    Each element is a four-byte type, a length that counts its own eight-byte header, and the
+    PNG bytes. The leading `TOC ` repeats every type and length, which is what iconutil emits
+    and what a strict reader looks for first.
+    """
+    def element(type_code, data):
+        return type_code + struct.pack(">I", len(data) + 8) + data
+
+    toc_data = b"".join(type_code + struct.pack(">I", len(data) + 8) for type_code, data in elements)
+    body = element(b"TOC ", toc_data) + b"".join(element(t, d) for t, d in elements)
     path.write_bytes(b"icns" + struct.pack(">I", len(body) + 8) + body)
 
 
 def main():
     import io
+    import shutil
+
+    iconset = ROOT / "Resources" / "AppIcon.iconset"
+    if iconset.exists():
+        shutil.rmtree(iconset)
+    iconset.mkdir(parents=True)
 
     rendered = {}
     elements = []
-    for size, type_code, simplified in ENTRIES:
+    for size, iconset_name, type_code, simplified in ENTRIES:
         key = (size, simplified)
         if key not in rendered:
             rendered[key] = render(size, simplified)
             print(f"  drew {size}px{' (simplified)' if simplified else ''}")
         buffer = io.BytesIO()
         rendered[key].save(buffer, format="PNG", optimize=True)
-        elements.append((type_code, buffer.getvalue()))
+        png = buffer.getvalue()
+        (iconset / iconset_name).write_bytes(png)
+        elements.append((type_code, png))
+    print(f"wrote {iconset.relative_to(ROOT)}/ ({len(ENTRIES)} images)")
 
     icns = ROOT / "Resources" / "AppIcon.icns"
-    icns.parent.mkdir(parents=True, exist_ok=True)
     write_icns(icns, elements)
     print(f"wrote {icns.relative_to(ROOT)} ({icns.stat().st_size // 1024} KB)")
 
