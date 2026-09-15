@@ -46,6 +46,8 @@ public struct PhotoTimings: Equatable {
     /// Fetching the photo from Lightroom, whether a held rendition or a full-size render.
     public var download: Duration = .zero
     public var didDownload = false
+    /// Hashing the served picture, so the same one is never imported twice.
+    public var hashing: Duration = .zero
     /// Reading the served size and bringing the photo down to the chosen one.
     public var resize: Duration = .zero
     /// Reading what the file says about itself and writing Lightroom's account of it back in.
@@ -59,7 +61,7 @@ public struct PhotoTimings: Equatable {
     public init() {}
 
     public var total: Duration {
-        lookup + download + resize + metadata + importing + ledger
+        lookup + download + hashing + resize + metadata + importing + ledger
     }
 
     /// "lookup 3.10 s, download 8.40 s, import 300 ms" — the steps that cost anything, in the
@@ -67,8 +69,8 @@ public struct PhotoTimings: Equatable {
     /// Empty when nothing took long enough to be worth naming.
     public var breakdown: String {
         let steps: [(name: String, duration: Duration)] = [
-            ("lookup", lookup), ("download", download), ("resize", resize),
-            ("metadata", metadata), ("import", importing), ("ledger", ledger),
+            ("lookup", lookup), ("download", download), ("hashing", hashing),
+            ("resize", resize), ("metadata", metadata), ("import", importing), ("ledger", ledger),
         ]
         return steps
             .filter { $0.duration >= Stopwatch.worthNaming }
@@ -88,6 +90,7 @@ public struct SyncTimings: Equatable {
     public var photosLookups = 0
     public var download: Duration = .zero
     public var downloads = 0
+    public var hashing: Duration = .zero
     public var resize: Duration = .zero
     public var metadata: Duration = .zero
     public var importing: Duration = .zero
@@ -102,6 +105,7 @@ public struct SyncTimings: Equatable {
         if photo.didLookup { photosLookups += 1 }
         download += photo.download
         if photo.didDownload { downloads += 1 }
+        hashing += photo.hashing
         resize += photo.resize
         metadata += photo.metadata
         importing += photo.importing
@@ -112,7 +116,7 @@ public struct SyncTimings: Equatable {
     /// Everything the pass spent time on, added up. Close to the pass's own duration but not the
     /// same as it: whatever falls between the measured steps lands in the gap.
     public var total: Duration {
-        listing + refiling + photosLookup + download + resize + metadata + importing + ledger
+        listing + refiling + photosLookup + download + hashing + resize + metadata + importing + ledger
     }
 
     /// Every step, longest first, with what each one is, so that naming the slow one is possible.
@@ -126,6 +130,8 @@ public struct SyncTimings: Equatable {
              "every photo not yet in the ledger is searched for across the library by capture date, which costs more the larger the library is."),
             ("downloads", download, downloads,
              "Lightroom builds each full-size photo on demand. The Small photo size takes a rendition it already holds instead, and downloads nothing full-size."),
+            ("hashing", hashing, nil,
+             "each downloaded photo is hashed to be sure the same picture is not imported twice."),
             ("resizing", resize, nil,
              "each photo is decoded and scaled down on this Mac. A smaller photo size that Lightroom already holds skips this."),
             ("metadata", metadata, nil,

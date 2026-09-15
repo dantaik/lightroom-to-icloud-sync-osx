@@ -119,7 +119,7 @@ final class SyncEngineConcurrencyTests: XCTestCase {
             fake.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/p\(index)",
                      headers: ["content-type": "image/jpeg",
                                "content-disposition": "attachment; filename=\"p\(index).jpg\""],
-                     body: fakeJPEG(width: 4000, height: 3000))
+                     body: fakeJPEG(width: 4000, height: 3000, picture: "p\(index)"))
         }
         fake.setJSON(assetsURL, assetsPageJSON(entries: entries))
         let importer = FakeImporter()
@@ -219,7 +219,9 @@ final class SyncEngineConcurrencyTests: XCTestCase {
             harness.fake.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/\(id)",
                              headers: ["content-type": "image/jpeg",
                                        "content-disposition": "attachment; filename=\"DSC_0100.jpg\""],
-                             body: fakeJPEG(width: 4000, height: 3000))
+                             // Deliberately not the same bytes: it is the file name and capture
+                             // time being tested here, not the content hash.
+                             body: fakeJPEG(width: 4000, height: 3000, picture: id))
         }
 
         let report = try await makeEngine(harness).run(config(concurrency: 5))

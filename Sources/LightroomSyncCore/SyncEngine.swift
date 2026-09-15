@@ -258,6 +258,8 @@ public final class SyncEngine {
         let name: String
         let fileURL: URL
         let fileName: String?
+        /// The picture's own hash, taken on the download before it was resized or described.
+        let contentSHA256: String?
         let metadata: PhotoMetadata
         let size: JPEGInfo.PixelSize?
         let downgraded: Bool
@@ -387,6 +389,12 @@ public final class SyncEngine {
             return .failed(photo: photo, name: name, message: "the check was stopped", timings: timings)
         }
 
+        // The picture's own identity, taken here and nowhere else: on the file exactly as it was
+        // served, before resizing changes its pixels and before its metadata is written back in.
+        let hashing = Stopwatch()
+        let contentSHA256 = PhotoContentHash.sha256(ofFileAt: downloaded.fileURL)
+        timings.hashing = hashing.elapsed
+
         // What Lightroom served is measured against what the chosen size asks for, not against
         // the edited photo: a photo held back by the size setting is doing what it was told.
         let sizing = Stopwatch()
@@ -412,7 +420,8 @@ public final class SyncEngine {
         // all, so the name it takes in Photos is the one the ledger and a second Mac look for.
         let fileName = downloaded.fileName ?? photo.expectedPhotosFileName ?? photo.fileName
         return .fetched(FetchedPhoto(photo: photo, name: name, fileURL: described.fileURL,
-                                     fileName: fileName, metadata: described.metadata, size: size,
+                                     fileName: fileName, contentSHA256: contentSHA256,
+                                     metadata: described.metadata, size: size,
                                      downgraded: downgraded, metadataRestored: described.restored,
                                      timings: timings))
     }
@@ -431,6 +440,33 @@ public final class SyncEngine {
             log(.error, "Download failed for \(name) after \(Stopwatch.describe(timings.download)): \(message)")
 
         case .fetched(var fetched):
+            // The last duplicate check, and the only one that can compare the pictures themselves.
+            // It costs a download to reach, so it saves nothing before the fetch — what it saves
+            // is the photo arriving in Photos a second time, which the ones before it can miss:
+            // two copies Lightroom hashes differently, under two different file names, are
+            // identical here. This runs on the one serial task, so the entry that answers it is
+            // always the one written by the copy that went first.
+            if let contentSHA256 = fetched.contentSHA256,
+               let existing = ledger.entry(withContentSHA256: contentSHA256) {
+                try? FileManager.default.removeItem(at: fetched.fileURL)
+                let recording = Stopwatch()
+                var duplicate = existing
+                duplicate.assetID = fetched.photo.assetID
+                duplicate.shareID = shareID
+                duplicate.albumID = albumID
+                duplicate.syncedAt = now
+                do {
+                    try ledger.record(duplicate)
+                } catch {
+                    log(.error, "\(fetched.name) is the same picture as one already synced, but could not be recorded in the ledger (\(error.localizedDescription))")
+                }
+                fetched.timings.ledger += recording.elapsed
+                report.timings.add(fetched.timings)
+                report.duplicates += 1
+                log(.info, "Skipping \(fetched.name): the same picture was already synced as \(existing.fileName ?? existing.assetID)")
+                return
+            }
+
             if fetched.downgraded { report.downgraded += 1 }
             if fetched.metadataRestored {
                 report.metadataRestored += 1
@@ -464,6 +500,7 @@ public final class SyncEngine {
                 try ledger.record(LedgerEntry(assetID: fetched.photo.assetID, shareID: shareID, albumID: albumID,
                                               fileName: fetched.fileName,
                                               originalSHA256: fetched.photo.originalSHA256,
+                                              contentSHA256: fetched.contentSHA256,
                                               photosLocalIdentifier: localIdentifier, photosAlbumName: albumName,
                                               syncedAt: now, captureDate: request.captureDate,
                                               pixelWidth: fetched.size?.width, pixelHeight: fetched.size?.height,

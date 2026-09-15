@@ -7,6 +7,10 @@ public struct LedgerEntry: Codable, Equatable {
     public var albumID: String
     public var fileName: String?
     public var originalSHA256: String?
+    /// SHA-256 of the downloaded picture with every metadata segment left out, as
+    /// ``PhotoContentHash`` computes it. Absent in ledgers written before this was tracked, and in
+    /// entries for photos that were never downloaded because Photos already held them.
+    public var contentSHA256: String?
     public var photosLocalIdentifier: String?
     /// The Photos album the photo was filed into, so a later change of album can be repaired.
     /// Absent in ledgers written before this was tracked, which reads as "album unknown".
@@ -19,13 +23,14 @@ public struct LedgerEntry: Codable, Equatable {
     public var downgraded: Bool
 
     public init(assetID: String, shareID: String, albumID: String, fileName: String?, originalSHA256: String?,
-                photosLocalIdentifier: String?, photosAlbumName: String? = nil, syncedAt: Date,
-                captureDate: Date?, pixelWidth: Int?, pixelHeight: Int?, downgraded: Bool) {
+                contentSHA256: String? = nil, photosLocalIdentifier: String?, photosAlbumName: String? = nil,
+                syncedAt: Date, captureDate: Date?, pixelWidth: Int?, pixelHeight: Int?, downgraded: Bool) {
         self.assetID = assetID
         self.shareID = shareID
         self.albumID = albumID
         self.fileName = fileName
         self.originalSHA256 = originalSHA256
+        self.contentSHA256 = contentSHA256
         self.photosLocalIdentifier = photosLocalIdentifier
         self.photosAlbumName = photosAlbumName
         self.syncedAt = syncedAt
@@ -71,6 +76,15 @@ public final class Ledger {
 
     public func entry(withOriginalSHA256 sha256: String) -> LedgerEntry? {
         state.entries.values.first { $0.originalSHA256 == sha256 }
+    }
+
+    /// A synced photo whose downloaded picture is byte-for-byte this one, metadata aside.
+    ///
+    /// The last word on whether two assets are one photograph, and the only one that needs no
+    /// file name, capture time or hash from Lightroom to say so. It can only be asked once a photo
+    /// has been downloaded, so it settles nothing before the fetch; see ``PhotoContentHash``.
+    public func entry(withContentSHA256 sha256: String) -> LedgerEntry? {
+        state.entries.values.first { $0.contentSHA256 == sha256 }
     }
 
     /// A synced photo that is the same photograph as this one: the same original file name, and a

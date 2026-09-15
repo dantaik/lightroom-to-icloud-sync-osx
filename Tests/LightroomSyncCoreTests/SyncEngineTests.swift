@@ -44,17 +44,18 @@ final class SyncEngineTests: XCTestCase {
                           photosAlbumName: albumName, checkInterval: 15 * 60, photoSize: size, ignoreDelays: ignoreDelays)
     }
 
-    private func setDownload(_ harness: Harness, assetID: String, width: Int, height: Int) {
+    private func setDownload(_ harness: Harness, assetID: String, width: Int, height: Int,
+                             picture: String? = nil) {
         harness.transport.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/\(assetID)",
                               headers: ["content-type": "image/jpeg", "content-disposition": "attachment; filename=\"\(assetID).jpg\""],
-                              body: fakeJPEG(width: width, height: height))
+                              body: fakeJPEG(width: width, height: height, picture: picture ?? assetID))
     }
 
     /// The rendition `assetEntry` lists for a photo, which is what the small size asks for.
     private func setRendition(_ harness: Harness, assetID: String, width: Int, height: Int) {
         harness.transport.set("\(api)/assets/\(assetID)/renditions/x",
                               headers: ["content-type": "image/jpeg"],
-                              body: fakeJPEG(width: width, height: height))
+                              body: fakeJPEG(width: width, height: height, picture: assetID))
     }
 
     /// One photo old enough to sync, edited at 60 MP unless told otherwise.
@@ -497,6 +498,41 @@ extension SyncEngineTests {
         XCTAssertEqual(harness.ledger.state.entries["p2"]?.photosLocalIdentifier,
                        harness.ledger.state.entries["p1"]?.photosLocalIdentifier)
         XCTAssertTrue(harness.sink.lines.contains { $0.contains("already synced with the same capture time") })
+    }
+
+    /// The last net, and the only one that compares the pictures themselves. Two assets with
+    /// different file names, different capture times and no hash from Lightroom look like two
+    /// photographs to every check that runs before the download — and are one, which only the
+    /// bytes can say. Both are fetched; only one reaches Photos.
+    func testTheSamePictureUnderTwoFileNamesIsImportedOnce() async throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.directory) }
+        let old = Date().addingTimeInterval(-7200)
+        harness.transport.setJSON(assetsURL, assetsPageJSON(entries: [
+            assetEntry(id: "p1", fileName: "DSC_0100.NEF", added: old, edited: old,
+                       captureDate: "2024-05-01T10:20:30"),
+            assetEntry(id: "p2", fileName: "IMG_9999.JPG", added: old, edited: old,
+                       captureDate: "2019-01-02T03:04:05"),
+        ]))
+        // The same photograph, served twice: identical pixels, and nothing else in common.
+        setDownload(harness, assetID: "p1", width: 4000, height: 3000, picture: "one and the same")
+        setDownload(harness, assetID: "p2", width: 4000, height: 3000, picture: "one and the same")
+
+        let report = try await harness.engine.run(config(albumName: nil))
+        XCTAssertEqual(report.synced, 1)
+        XCTAssertEqual(report.duplicates, 1)
+        XCTAssertEqual(harness.importer.requests.count, 1, "the picture reached Photos once")
+        XCTAssertTrue(harness.transport.requests.contains { $0.absoluteString.hasSuffix("assets/p2") },
+                      "it took a download to find out, which is the price of this check")
+        XCTAssertEqual(harness.ledger.state.entries["p2"]?.photosLocalIdentifier,
+                       harness.ledger.state.entries["p1"]?.photosLocalIdentifier)
+        XCTAssertEqual(harness.ledger.state.entries["p1"]?.contentSHA256,
+                       harness.ledger.state.entries["p2"]?.contentSHA256)
+        XCTAssertTrue(harness.sink.lines.contains { $0.contains("the same picture was already synced") })
+        // The download of the copy is not left behind just because it was never imported.
+        let leftovers = (try? FileManager.default.contentsOfDirectory(
+            atPath: harness.directory.appendingPathComponent("downloads").path)) ?? []
+        XCTAssertEqual(leftovers, [])
     }
 
     /// Two photographs that merely share a camera file name are not one photograph. The capture
