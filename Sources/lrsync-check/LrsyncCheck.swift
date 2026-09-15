@@ -5,8 +5,12 @@ import FoundationNetworking
 #endif
 
 /// Prints what LightroomSync sees for a shared album: its albums, the downloads setting and every
-/// photo with its edit state and timestamps. With a directory argument it also downloads each
-/// photo's full-size rendition there and reports the pixel size it received.
+/// photo with its edit state, timestamps and the renditions Lightroom holds of it. With a
+/// directory argument it also downloads each photo's full-size rendition there and reports the
+/// pixel size it received.
+///
+/// The download is always the full-size one, whatever size the app is set to sync at: this is
+/// about what Lightroom will serve, not about what ends up in Photos.
 ///
 /// It never touches the Photos library, so it is safe to run while diagnosing a share link.
 @main
@@ -45,6 +49,8 @@ struct LrsyncCheck {
                 print("  • \(photo.fileName ?? photo.assetID) [\(photo.subtype)] original \(original), edited \(edited), edits: \(photo.hasEdits ? "yes" : "no")")
                 print("      asset \(photo.assetID) captured \(format(photo.captureDate)) added \(format(photo.addedToAlbumAt)) last edit \(format(photo.lastEditedAt))")
                 print("      in Photos it is looked up as \(photo.expectedPhotosFileName ?? "?")")
+                let renditions = photo.renditionHrefs.keys.sorted().joined(separator: ", ")
+                print("      renditions Lightroom holds: \(renditions.isEmpty ? "none" : renditions)")
             }
 
             if let downloadDirectory {

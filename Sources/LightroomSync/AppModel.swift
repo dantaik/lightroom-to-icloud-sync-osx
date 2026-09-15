@@ -31,6 +31,7 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
         static let photosAlbum = "photosAlbumName"
         static let intervalValue = "intervalValue"
         static let intervalUnit = "intervalUnit"
+        static let photoSize = "photoSize"
         static let legacyIntervalMinutes = "intervalMinutes"
     }
 
@@ -45,7 +46,10 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
             albumID: defaults.string(forKey: Keys.albumID),
             photosAlbumName: defaults.string(forKey: Keys.photosAlbum) ?? "",
             intervalValue: interval.value,
-            intervalUnit: interval.unit
+            intervalUnit: interval.unit,
+            // Settings saved before sizes existed name none, and get the default: photos no
+            // larger than a Pro Display XDR rather than the full-size render they used to get.
+            photoSize: defaults.string(forKey: Keys.photoSize).flatMap(PhotoSize.init(rawValue:)) ?? .default
         ).normalized
     }
 
@@ -65,6 +69,7 @@ private struct UserDefaultsSettingsStore: SyncSettingsStore {
         defaults.set(settings.photosAlbumName, forKey: Keys.photosAlbum)
         defaults.set(settings.intervalValue, forKey: Keys.intervalValue)
         defaults.set(settings.intervalUnit.rawValue, forKey: Keys.intervalUnit)
+        defaults.set(settings.photoSize.rawValue, forKey: Keys.photoSize)
         defaults.removeObject(forKey: Keys.legacyIntervalMinutes)
     }
 }
@@ -144,6 +149,7 @@ final class AppModel: ObservableObject {
             self.ledger = ledger
             let photoKit = PhotoKitImporter()
             engine = SyncEngine(client: client, ledger: ledger, importer: photoKit, photoLibrary: photoKit,
+                                resizer: ImageResizer(),
                                 downloadDirectory: support.appendingPathComponent("downloads", isDirectory: true),
                                 sink: bridge)
             syncedCount = ledger.syncedCount
@@ -251,6 +257,7 @@ final class AppModel: ObservableObject {
         phase = .idle
         let description = settings.isConfigured ? "saved" : "cleared"
         bridge.log(.info, "Settings \(description): every \(settings.intervalDescription)"
+            + ", photos at \(settings.photoSize.shortDescription)"
             + (settings.photosAlbumName.isEmpty ? ", no Photos album" : ", Photos album “\(settings.photosAlbumName)”"))
         validateSavedLink()
     }

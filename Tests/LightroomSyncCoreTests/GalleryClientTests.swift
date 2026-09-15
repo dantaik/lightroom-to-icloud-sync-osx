@@ -58,6 +58,35 @@ final class GalleryClientTests: XCTestCase {
         XCTAssertEqual(JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL), JPEGInfo.PixelSize(width: 3052, height: 4069))
     }
 
+    func testDownloadsARenditionRelativeToTheSpace() async throws {
+        let transport = FakeTransport()
+        let href = "assets/a1/revisions/r1/renditions/abc"
+        transport.set("https://lightroom.adobe.com/v2c/spaces/\(share)/\(href)",
+                      headers: ["Content-Type": "image/jpeg"], body: fakeJPEG(width: 2048, height: 1365))
+        let client = LightroomGalleryClient(transport: transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let downloaded = try await client.downloadRendition(shareID: share, assetID: "a1", href: href, to: directory)
+        XCTAssertEqual(downloaded.fileURL.lastPathComponent, "a1.jpg")
+        XCTAssertNil(downloaded.fileName, "a rendition carries no content-disposition")
+        XCTAssertEqual(JPEGInfo.pixelSize(ofFileAt: downloaded.fileURL), JPEGInfo.PixelSize(width: 2048, height: 1365))
+    }
+
+    func testAMissingRenditionIsAnOrdinaryHTTPFailure() async throws {
+        let transport = FakeTransport()
+        let client = LightroomGalleryClient(transport: transport)
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do {
+            _ = try await client.downloadRendition(shareID: share, assetID: "a1", href: "assets/a1/renditions/gone", to: directory)
+            XCTFail("expected an error")
+        } catch let error as LightroomError {
+            // Never downloadsDisabled: a rendition is viewable in the gallery whatever the share
+            // allows, so a failure here must not abort the whole pass.
+            guard case .httpStatus(404, _) = error else { return XCTFail("unexpected error \(error)") }
+        }
+    }
+
     func testDownloadForbiddenMeansDownloadsDisabled() async throws {
         let transport = FakeTransport()
         transport.set("https://dl.lightroom.adobe.com/spaces/\(share)/assets/a1", status: 403, body: Data("forbidden".utf8))

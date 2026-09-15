@@ -39,6 +39,7 @@ public enum LightroomError: Error, LocalizedError, Equatable {
     case decoding(String, URL)
     case downloadsDisabled
     case unexpectedContentType(String?)
+    case renditionUnavailable(String)
     case tooManyPages
 
     public var errorDescription: String? {
@@ -53,6 +54,8 @@ public enum LightroomError: Error, LocalizedError, Equatable {
             return "Downloads are disabled for this share. In Lightroom, open the album's share settings and turn on “Allow downloads”."
         case .unexpectedContentType(let type):
             return "Expected an image but received \(type ?? "no content type")."
+        case .renditionUnavailable(let href):
+            return "Lightroom listed a rendition at \(href), which is not a usable address."
         case .tooManyPages:
             return "The album listing did not end after 200 pages; giving up."
         }
@@ -125,14 +128,38 @@ public final class LightroomGalleryClient {
     }
 
     /// Downloads the full-size edited rendition of a photo (what the gallery's Download button serves).
+    ///
+    /// Lightroom builds this file on demand, so it is by far the slowest call the app makes.
     public func downloadFullSize(shareID: String, assetID: String, to directory: URL) async throws -> DownloadedPhoto {
         let downloadURL = URL(string: "spaces/\(shareID)/assets/\(assetID)", relativeTo: Self.downloadBase)!.absoluteURL
-        let response = try await transport.get(downloadURL, headers: [
+        do {
+            return try await downloadImage(at: downloadURL, assetID: assetID, to: directory)
+        } catch LightroomError.httpStatus(403, _) {
+            // The download host answers 403 for exactly one reason: the share forbids downloads.
+            throw LightroomError.downloadsDisabled
+        }
+    }
+
+    /// Downloads a rendition Lightroom already holds, named by one of the asset's
+    /// `/rels/rendition_type/…` links. Nothing is rendered on demand, so this returns in a
+    /// fraction of the time the full-size download takes.
+    ///
+    /// The href is relative to `spaces/{shareID}/`, the same base the album listing came from.
+    public func downloadRendition(shareID: String, assetID: String, href: String, to directory: URL) async throws -> DownloadedPhoto {
+        let base = url("spaces/\(shareID)/")
+        guard let renditionURL = URL(string: href, relativeTo: base)?.absoluteURL else {
+            throw LightroomError.renditionUnavailable(href)
+        }
+        return try await downloadImage(at: renditionURL, assetID: assetID, to: directory)
+    }
+
+    /// The part both downloads share: fetch, check that it really is an image, write it out.
+    private func downloadImage(at url: URL, assetID: String, to directory: URL) async throws -> DownloadedPhoto {
+        let response = try await transport.get(url, headers: [
             "User-Agent": userAgent,
             "Accept": "image/jpeg,image/*;q=0.9,*/*;q=0.5",
         ])
-        if response.status == 403 { throw LightroomError.downloadsDisabled }
-        guard response.status == 200 else { throw LightroomError.httpStatus(response.status, downloadURL) }
+        guard response.status == 200 else { throw LightroomError.httpStatus(response.status, url) }
         let contentType = response.header("content-type")
         guard let contentType, contentType.lowercased().hasPrefix("image/") else {
             throw LightroomError.unexpectedContentType(contentType)

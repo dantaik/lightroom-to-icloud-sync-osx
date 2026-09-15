@@ -83,6 +83,26 @@ final class FakeImporter: PhotoImporting {
     }
 }
 
+/// Stands in for ImageIO: writes a new, smaller file next to the one it was handed, the way the
+/// real resizer does, and records every size it was asked for.
+final class FakeResizer: PhotoResizing {
+    var requests: [(url: URL, maxLongEdge: Int)] = []
+    var error: Error?
+
+    func resized(fileAt url: URL, maxLongEdge: Int) throws -> URL {
+        requests.append((url, maxLongEdge))
+        if let error { throw error }
+        guard let size = JPEGInfo.pixelSize(ofFileAt: url), size.longEdge > maxLongEdge else { return url }
+        let scale = Double(maxLongEdge) / Double(size.longEdge)
+        let destination = url.deletingLastPathComponent()
+            .appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(maxLongEdge).jpg")
+        try fakeJPEG(width: max(1, Int((Double(size.width) * scale).rounded())),
+                     height: max(1, Int((Double(size.height) * scale).rounded())))
+            .write(to: destination, options: .atomic)
+        return destination
+    }
+}
+
 /// Stands in for the Photos library: which assets it holds and which album each one is in.
 final class FakePhotoLibrary: PhotoLibraryAccess {
     /// Local identifiers keyed by the file name the library is asked about.

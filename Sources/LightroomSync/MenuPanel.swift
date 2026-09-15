@@ -29,6 +29,7 @@ struct MenuPanel: View {
             VStack(alignment: .leading, spacing: Metrics.betweenSections) {
                 lightroomSection
                 photosSection
+                sizeSection
                 scheduleSection
                 saveBar
             }
@@ -152,6 +153,24 @@ struct MenuPanel: View {
                 .textFieldStyle(.roundedBorder)
 
             caption("Created if it does not exist, and refilled if you delete it.")
+        }
+    }
+
+    /// The size photos are synced at. Worth a section of its own: it is the one setting that
+    /// decides how long a check takes and how much of iCloud the album fills.
+    private var sizeSection: some View {
+        VStack(alignment: .leading, spacing: Metrics.withinSection) {
+            sectionHeader("Photo size")
+
+            Picker("", selection: $model.editor.draft.photoSize) {
+                ForEach(PhotoSize.allCases) { size in
+                    Text(size.menuLabel).tag(size)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+
+            caption(model.editor.draft.photoSize.summary)
         }
     }
 

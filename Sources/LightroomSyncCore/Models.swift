@@ -137,6 +137,8 @@ public struct LightroomAsset: Decodable {
     public let created: String?
     public let updated: String?
     public let payload: Payload?
+    /// Rendition links among others: `/rels/rendition_type/2048`, `1280`, `640`, `thumbnail2x`.
+    public let links: LinkMap?
 }
 
 // MARK: - Domain model
@@ -159,10 +161,17 @@ public struct LightroomPhoto: Equatable, Identifiable {
     /// The most recent edit or metadata change Lightroom reports for the photo.
     public let lastEditedAt: Date?
     public let hasEdits: Bool
+    /// Renditions Lightroom already holds, keyed by type: `2048`, `1280`, `640`, `thumbnail2x`.
+    /// The hrefs are relative to `spaces/{shareID}/`.
+    public let renditionHrefs: [String: String]
+
+    /// The link relation each rendition href is listed under.
+    static let renditionTypePrefix = "/rels/rendition_type/"
 
     public init(assetID: String, subtype: String, fileName: String?, originalSHA256: String?,
                 originalWidth: Int?, originalHeight: Int?, croppedWidth: Int?, croppedHeight: Int?,
-                captureDate: Date?, addedToAlbumAt: Date?, lastEditedAt: Date?, hasEdits: Bool) {
+                captureDate: Date?, addedToAlbumAt: Date?, lastEditedAt: Date?, hasEdits: Bool,
+                renditionHrefs: [String: String] = [:]) {
         self.assetID = assetID
         self.subtype = subtype
         self.fileName = fileName
@@ -175,6 +184,7 @@ public struct LightroomPhoto: Equatable, Identifiable {
         self.addedToAlbumAt = addedToAlbumAt
         self.lastEditedAt = lastEditedAt
         self.hasEdits = hasEdits
+        self.renditionHrefs = renditionHrefs
     }
 
     public init?(entry: AlbumAssetEntry) {
@@ -199,11 +209,28 @@ public struct LightroomPhoto: Equatable, Identifiable {
                 ?? AdobeDate.parse(payload?.userCreated)
                 ?? AdobeDate.parse(asset.created),
             lastEditedAt: edits.max(),
-            hasEdits: payload?.develop?.hasCameraRawSettings ?? false
+            hasEdits: payload?.develop?.hasCameraRawSettings ?? false,
+            renditionHrefs: Self.renditions(in: asset.links)
         )
     }
 
     public var isImage: Bool { subtype == "image" }
+
+    /// The href of a rendition Lightroom already holds, e.g. `2048`, or nil when this asset has
+    /// none of that type. A share always lists renditions for its photos; a video does not.
+    public func renditionHref(forType type: String) -> String? {
+        renditionHrefs[type]
+    }
+
+    /// Picks the `/rels/rendition_type/…` entries out of an asset's links, keyed by type.
+    static func renditions(in links: LinkMap?) -> [String: String] {
+        guard let links else { return [:] }
+        var renditions: [String: String] = [:]
+        for (rel, href) in links.hrefs where rel.hasPrefix(renditionTypePrefix) {
+            renditions[String(rel.dropFirst(renditionTypePrefix.count))] = href
+        }
+        return renditions
+    }
 
     /// Long edge of the edited (cropped) photo, when Lightroom reports it.
     public var expectedLongEdge: Int? {
